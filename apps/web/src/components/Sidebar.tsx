@@ -115,111 +115,135 @@ function SidebarItem({
           {...provided.draggableProps}
           className={snapshot.isDragging ? "opacity-50" : ""}
         >
-          <div
-            className={`
-              relative flex items-center gap-1 px-2 py-1 rounded cursor-pointer group
-              hover:bg-gray-800/50 transition-colors
-              ${isActive ? "bg-gray-800" : ""}
-            `}
-            style={{ paddingLeft: `${level * 12 + 8}px` }}
-            onMouseEnter={() => setIsHovered(true)}
-            onMouseLeave={() => setIsHovered(false)}
-            onClick={() => navigate(`/document/${document._id}`)}
+          {/* Wrap the item in a Droppable so we can drop onto it */}
+          <DroppableAny
+            droppableId={`nest-${document._id}`}
+            type="document"
+            isDropDisabled={false}
           >
-            {/* Drag handle */}
-            <div {...provided.dragHandleProps} className="flex-shrink-0">
-              <div className="w-4 h-4 flex items-center justify-center text-gray-600 hover:text-gray-400 opacity-0 group-hover:opacity-100">
-                ⋮⋮
-              </div>
-            </div>
-
-            {/* Expand/collapse arrow */}
-            {hasChildren ? (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsExpanded(!isExpanded);
-                }}
-                className="w-4 h-4 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+            {(droppableProvided: any, droppableSnapshot: any) => (
+              <div
+                ref={droppableProvided.innerRef}
+                {...droppableProvided.droppableProps}
+                className={`
+                ${
+                  droppableSnapshot.isDraggingOver
+                    ? "bg-blue-900/30 ring-2 ring-blue-500/50"
+                    : ""
+                }
+              `}
               >
-                <span className="text-xs text-gray-400">
-                  {isExpanded ? "▼" : "▶"}
-                </span>
-              </button>
-            ) : (
-              <div className="w-4 flex-shrink-0" />
-            )}
-
-            {/* Icon */}
-            <button
-              ref={iconButtonRef}
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowIconPicker(true);
-              }}
-              className="text-lg hover:scale-110 transition-transform flex-shrink-0"
-            >
-              {document.icon || "📄"}
-            </button>
-
-            {showIconPicker && (
-              <IconPicker
-                currentIcon={document.icon || "📄"}
-                onSelect={(icon) => updateIconMutation.mutate(icon)}
-                onClose={() => setShowIconPicker(false)}
-                triggerRef={iconButtonRef.current}
-              />
-            )}
-
-            {/* Title */}
-            <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
-              {document.title || "Untitled"}
-            </span>
-
-            {/* Favorite star */}
-            {isHovered && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFavorite(document._id!);
-                }}
-                className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
-              >
-                <span
-                  className={isFavorite ? "text-yellow-400" : "text-gray-600"}
+                <div
+                  className={`
+                  relative flex items-center gap-1 px-2 py-1 rounded cursor-pointer group
+                  hover:bg-gray-800/50 transition-colors
+                  ${isActive ? "bg-gray-800" : ""}
+                `}
+                  style={{ paddingLeft: `${level * 12 + 8}px` }}
+                  onMouseEnter={() => setIsHovered(true)}
+                  onMouseLeave={() => setIsHovered(false)}
+                  onClick={() => navigate(`/document/${document._id}`)}
                 >
-                  {isFavorite ? "★" : "☆"}
-                </span>
-              </button>
-            )}
+                  {/* Drag handle */}
+                  <div {...provided.dragHandleProps} className="flex-shrink-0">
+                    <div className="w-4 h-4 flex items-center justify-center text-gray-600 hover:text-gray-400 opacity-0 group-hover:opacity-100">
+                      ⋮⋮
+                    </div>
+                  </div>
 
-            {/* Options button */}
-            {isHovered && (
-              <button
-                ref={optionsButtonRef}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowOptions(true);
-                }}
-                className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
-              >
-                <span className="text-gray-400">⋯</span>
-              </button>
-            )}
+                  {/* Expand/collapse arrow */}
+                  {hasChildren ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsExpanded(!isExpanded);
+                      }}
+                      className="w-4 h-4 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                    >
+                      <span className="text-xs text-gray-400">
+                        {isExpanded ? "▼" : "▶"}
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="w-4 flex-shrink-0" />
+                  )}
 
-            {showOptions && (
-              <PageOptionsMenu
-                onAddChild={() => setIsCreatingChild(true)}
-                onDelete={() => {
-                  if (confirm(`Delete "${document.title}"?`)) {
-                    deleteMutation.mutate();
-                  }
-                }}
-                onClose={() => setShowOptions(false)}
-                triggerRef={optionsButtonRef.current}
-              />
+                  {/* Icon */}
+                  <button
+                    ref={iconButtonRef}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowIconPicker(true);
+                    }}
+                    className="text-lg hover:scale-110 transition-transform flex-shrink-0"
+                  >
+                    {document.icon || "📄"}
+                  </button>
+
+                  {showIconPicker && (
+                    <IconPicker
+                      currentIcon={document.icon || "📄"}
+                      onSelect={(icon) => updateIconMutation.mutate(icon)}
+                      onClose={() => setShowIconPicker(false)}
+                      triggerRef={iconButtonRef.current}
+                    />
+                  )}
+
+                  {/* Title */}
+                  <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
+                    {document.title || "Untitled"}
+                  </span>
+
+                  {/* Favorite star */}
+                  {isHovered && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleFavorite(document._id!);
+                      }}
+                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                    >
+                      <span
+                        className={
+                          isFavorite ? "text-yellow-400" : "text-gray-600"
+                        }
+                      >
+                        {isFavorite ? "★" : "☆"}
+                      </span>
+                    </button>
+                  )}
+
+                  {/* Options button */}
+                  {isHovered && (
+                    <button
+                      ref={optionsButtonRef}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowOptions(true);
+                      }}
+                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                    >
+                      <span className="text-gray-400">⋯</span>
+                    </button>
+                  )}
+
+                  {showOptions && (
+                    <PageOptionsMenu
+                      onAddChild={() => setIsCreatingChild(true)}
+                      onDelete={() => {
+                        if (confirm(`Delete "${document.title}"?`)) {
+                          deleteMutation.mutate();
+                        }
+                      }}
+                      onClose={() => setShowOptions(false)}
+                      triggerRef={optionsButtonRef.current}
+                    />
+                  )}
+                </div>
+                {droppableProvided.placeholder}
+              </div>
             )}
-          </div>
+          </DroppableAny>
 
           {/* Create child form */}
           {isCreatingChild && (
@@ -270,11 +294,11 @@ function SidebarItem({
       )}
     </DraggableAny>
   );
-}
 
-interface SidebarProps {
-  favorites: string[];
-  setFavorites: (favorites: string[]) => void;
+  interface SidebarProps {
+    favorites: string[];
+    setFavorites: (favorites: string[]) => void;
+  }
 }
 
 export function Sidebar({ favorites, setFavorites }: SidebarProps) {
@@ -337,7 +361,26 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       return;
     }
 
-    const destParentId =
+    let destParentId: string | null = null;
+
+    // Check if dropped onto a document (nest operation)
+    if (destination.droppableId.startsWith("nest-")) {
+      destParentId = destination.droppableId.replace("nest-", "");
+      console.log("Nesting document under:", destParentId);
+
+      // Make it a child and set order to 0 (first child)
+      updateMutation.mutate({
+        id: draggableId,
+        data: {
+          parentId: destParentId,
+          order: 0,
+        },
+      });
+      return;
+    }
+
+    // Normal drop in a list
+    destParentId =
       destination.droppableId === "root"
         ? null
         : destination.droppableId.replace("children-", "");
@@ -365,7 +408,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       },
     });
 
-    // Adjust orders for sibling documents in the destination list
+    // Adjust orders for sibling documents
     const destParentIdStr = destParentId;
     const sourceParentIdStr = sourceParentId;
 
@@ -373,21 +416,17 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       documents.filter((d) => (d.parentId ?? null) === destParentIdStr)
     );
 
-    // Iterate siblings and bump order where needed (simple approach)
     siblings.forEach((doc, idx) => {
       if (doc._id === draggableId) return;
 
       let adjustedIdx = idx;
 
-      // If moving within the same parent and the move affects indices, adjust accordingly
       if (destParentIdStr === sourceParentIdStr) {
         if (source.index < destination.index) {
-          // moving down
           if (idx > source.index && idx <= destination.index) {
             adjustedIdx = idx - 1;
           }
         } else if (source.index > destination.index) {
-          // moving up
           if (idx >= destination.index && idx < source.index) {
             adjustedIdx = idx + 1;
           }

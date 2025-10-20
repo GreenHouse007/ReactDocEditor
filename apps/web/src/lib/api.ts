@@ -49,4 +49,19 @@ export const api = {
       method: "DELETE",
     });
   },
+
+  // Export document as PDF
+  async exportPDF(title: string, content: any, icon?: string): Promise<Blob> {
+    const response = await fetch(`${API_URL}/api/export-pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, content, icon }),
+    });
+
+    if (!response.ok) {
+      throw new Error("PDF export failed");
+    }
+
+    return await response.blob();
+  },
 };

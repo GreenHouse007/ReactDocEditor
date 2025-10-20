@@ -98,15 +98,44 @@ export function DocumentEdit() {
     );
   }
 
+  const handleExportPDF = async () => {
+    if (!document) return;
+
+    try {
+      const blob = await api.exportPDF(title, content, document.icon);
+
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const a = window.document.createElement("a");
+      a.href = url;
+      a.download = `${title || "document"}.pdf`;
+      window.document.body.appendChild(a);
+      a.click();
+      window.document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("PDF export failed:", error);
+      alert("Failed to export PDF");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
-      {/* Save indicator */}
-      <div className="absolute top-4 right-8 text-sm text-gray-400">
-        {isSaving
-          ? "Saving..."
-          : updateMutation.isPending
-          ? "Saving..."
-          : "All changes saved"}
+      {/* Save indicator and Export */}
+      <div className="absolute top-4 right-8 flex items-center gap-4">
+        <button
+          onClick={handleExportPDF}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition-colors"
+        >
+          📄 Export PDF
+        </button>
+        <div className="text-sm text-gray-400">
+          {isSaving
+            ? "Saving..."
+            : updateMutation.isPending
+            ? "Saving..."
+            : "All changes saved"}
+        </div>
       </div>
 
       {/* Title */}
