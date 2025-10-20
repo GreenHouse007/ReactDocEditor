@@ -1,11 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Document, UpdateDocumentDto } from "@enfield/types";
-import { IconPicker } from "./IconPicker";
-import { PageOptionsMenu } from "./PageOptionsMenu";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
+import { DocumentMenu } from "./menus/DocumentMenu";
+import { MoveDocumentModal } from "./modals/MoveDocumentModal";
+import { sortDocuments } from "../utils/documentTree";
 
 // Workaround for type conflicts between multiple @types/react versions in the monorepo.
 // Cast the DnD components to `any` so they can be used in JSX without TypeScript errors.
@@ -13,22 +14,14 @@ const DragDropContextAny = DragDropContext as any;
 const DroppableAny = Droppable as any;
 const DraggableAny = Draggable as any;
 
-// Helper function to sort documents by order
-function sortDocuments(docs: Document[]): Document[] {
-  return [...docs].sort((a, b) => {
-    const orderA = a.order ?? 999999;
-    const orderB = b.order ?? 999999;
-    return orderA - orderB;
-  });
-}
-
 interface SidebarItemProps {
   document: Document;
   level: number;
   allDocuments: Document[];
   index: number;
-  favorites: string[];
-  onToggleFavorite: (id: string) => void;
+  onRename: (id: string, title: string) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+  onMoveRequest: (document: Document) => void;
 }
 
 function SidebarItem({
@@ -36,75 +29,45 @@ function SidebarItem({
   level,
   allDocuments,
   index,
-  favorites,
-  onToggleFavorite,
+  onRename,
+  onDelete,
+  onMoveRequest,
 }: SidebarItemProps) {
   const navigate = useNavigate();
   const { id: currentId } = useParams();
-  const queryClient = useQueryClient();
   const [isExpanded, setIsExpanded] = useState(true);
-  const [isHovered, setIsHovered] = useState(false);
-  const [showIconPicker, setShowIconPicker] = useState(false);
-  const [showOptions, setShowOptions] = useState(false);
-  const [isCreatingChild, setIsCreatingChild] = useState(false);
-  const [childTitle, setChildTitle] = useState("");
-  const iconButtonRef = useRef<HTMLButtonElement>(null);
-  const optionsButtonRef = useRef<HTMLButtonElement>(null);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(document.title || "Untitled");
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   const children = sortDocuments(
     allDocuments.filter((doc) => doc.parentId === document._id)
   );
   const hasChildren = children.length > 0;
   const isActive = currentId === document._id;
-  const isFavorite = favorites.includes(document._id || "");
 
-  const updateIconMutation = useMutation({
-    mutationFn: (icon: string) => {
-      console.log("Updating icon to:", icon, "for document:", document._id);
-      return api.updateDocument(document._id!, { icon });
-    },
-    onSuccess: () => {
-      console.log("Icon update successful");
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      queryClient.invalidateQueries({ queryKey: ["document", document._id] });
-    },
-    onError: (error) => {
-      console.error("Icon update failed:", error);
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: () => api.deleteDocument(document._id!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      if (currentId === document._id) {
-        navigate("/");
-      }
-    },
-  });
-
-  const createChildMutation = useMutation({
-    mutationFn: (title: string) =>
-      api.createDocument({
-        title,
-        authorId: "demo-user",
-        parentId: document._id,
-        icon: "📄",
-      }),
-    onSuccess: (newDoc) => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      setIsCreatingChild(false);
-      setChildTitle("");
-      setIsExpanded(true);
-      navigate(`/document/${newDoc._id}`);
-    },
-  });
-
-  const handleCreateChild = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (childTitle.trim()) {
-      createChildMutation.mutate(childTitle);
+  useEffect(() => {
+    if (isRenaming && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
     }
+  }, [isRenaming]);
+
+  useEffect(() => {
+    setRenameValue(document.title || "Untitled");
+  }, [document.title]);
+
+  const handleRenameConfirm = async () => {
+    const newTitle = renameValue.trim();
+    if (!newTitle || newTitle === document.title) {
+      setIsRenaming(false);
+      return;
+    }
+
+    await onRename(document._id!, newTitle);
+    setIsRenaming(false);
   };
 
   return (
@@ -134,24 +97,21 @@ function SidebarItem({
               `}
               >
                 <div
-                  className={`
-                  relative flex items-center gap-1 px-2 py-1 rounded cursor-pointer group
-                  hover:bg-gray-800/50 transition-colors
-                  ${isActive ? "bg-gray-800" : ""}
-                `}
+                  className={`relative flex items-center gap-2 px-3 py-2 rounded cursor-pointer group hover:bg-gray-800/60 transition-colors ${isActive ? "bg-gray-800" : ""}`}
                   style={{ paddingLeft: `${level * 12 + 8}px` }}
-                  onMouseEnter={() => setIsHovered(true)}
-                  onMouseLeave={() => setIsHovered(false)}
-                  onClick={() => navigate(`/document/${document._id}`)}
+                  onClick={() => {
+                    if (!isRenaming) {
+                      navigate(`/document/${document._id}`);
+                    }
+                  }}
                 >
-                  {/* Drag handle */}
-                  <div {...provided.dragHandleProps} className="flex-shrink-0">
-                    <div className="w-4 h-4 flex items-center justify-center text-gray-600 hover:text-gray-400 opacity-0 group-hover:opacity-100">
-                      ⋮⋮
-                    </div>
+                  <div
+                    {...provided.dragHandleProps}
+                    className="flex-shrink-0 w-4 h-4 flex items-center justify-center text-gray-600 group-hover:text-gray-400"
+                  >
+                    ⋮⋮
                   </div>
 
-                  {/* Expand/collapse arrow */}
                   {hasChildren ? (
                     <button
                       onClick={(e) => {
@@ -168,103 +128,72 @@ function SidebarItem({
                     <div className="w-4 flex-shrink-0" />
                   )}
 
-                  {/* Icon */}
-                  <button
-                    ref={iconButtonRef}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowIconPicker(true);
-                    }}
-                    className="text-lg hover:scale-110 transition-transform flex-shrink-0"
-                  >
-                    {document.icon || "📄"}
-                  </button>
-
-                  {showIconPicker && (
-                    <IconPicker
-                      currentIcon={document.icon || "📄"}
-                      onSelect={(icon) => updateIconMutation.mutate(icon)}
-                      onClose={() => setShowIconPicker(false)}
-                      triggerRef={iconButtonRef.current}
-                    />
-                  )}
-
-                  {/* Title */}
-                  <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
-                    {document.title || "Untitled"}
-                  </span>
-
-                  {/* Favorite star */}
-                  {isHovered && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleFavorite(document._id!);
-                      }}
-                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
-                    >
-                      <span
-                        className={
-                          isFavorite ? "text-yellow-400" : "text-gray-600"
-                        }
-                      >
-                        {isFavorite ? "★" : "☆"}
+                  <div className="flex-1 min-w-0">
+                    {isRenaming ? (
+                      <input
+                        ref={renameInputRef}
+                        className="w-full bg-transparent border border-blue-500/60 rounded px-2 py-1 text-sm text-gray-100 focus:outline-none"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={handleRenameConfirm}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleRenameConfirm();
+                          }
+                          if (e.key === "Escape") {
+                            setIsRenaming(false);
+                            setRenameValue(document.title || "Untitled");
+                          }
+                        }}
+                      />
+                    ) : (
+                      <span className="text-sm text-gray-200 truncate">
+                        {document.title || "Untitled"}
                       </span>
-                    </button>
-                  )}
+                    )}
+                  </div>
 
-                  {/* Options button */}
-                  {isHovered && (
+                  <div className="flex-shrink-0 ml-2 relative">
                     <button
-                      ref={optionsButtonRef}
+                      ref={menuButtonRef}
                       onClick={(e) => {
                         e.stopPropagation();
-                        setShowOptions(true);
+                        setIsMenuOpen((prev) => !prev);
                       }}
-                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                      className={`w-6 h-6 flex items-center justify-center rounded text-gray-400 transition-opacity duration-150 group-hover:opacity-100 ${
+                        isMenuOpen ? "opacity-100" : "opacity-0"
+                      }`}
                     >
-                      <span className="text-gray-400">⋯</span>
+                      <span className="text-lg leading-none">⋮</span>
                     </button>
-                  )}
 
-                  {showOptions && (
-                    <PageOptionsMenu
-                      onAddChild={() => setIsCreatingChild(true)}
+                    <DocumentMenu
+                      isOpen={isMenuOpen}
+                      anchorRef={menuButtonRef}
+                      onRequestClose={() => setIsMenuOpen(false)}
+                      onRename={() => {
+                        setIsMenuOpen(false);
+                        setRenameValue(document.title || "Untitled");
+                        setIsRenaming(true);
+                      }}
                       onDelete={() => {
-                        if (confirm(`Delete "${document.title}"?`)) {
-                          deleteMutation.mutate();
+                        setIsMenuOpen(false);
+                        if (confirm(`Delete "${document.title || "Untitled"}"?`)) {
+                          onDelete(document._id!);
                         }
                       }}
-                      onClose={() => setShowOptions(false)}
-                      triggerRef={optionsButtonRef.current}
+                      onMove={() => {
+                        setIsMenuOpen(false);
+                        onMoveRequest(document);
+                      }}
                     />
-                  )}
+                  </div>
                 </div>
                 {droppableProvided.placeholder}
               </div>
             )}
           </DroppableAny>
-
-          {/* Create child form */}
-          {isCreatingChild && (
-            <form
-              onSubmit={handleCreateChild}
-              style={{ paddingLeft: `${(level + 1) * 12 + 32}px` }}
-              className="px-2 py-1"
-            >
-              <input
-                type="text"
-                value={childTitle}
-                onChange={(e) => setChildTitle(e.target.value)}
-                onBlur={() => {
-                  if (!childTitle.trim()) setIsCreatingChild(false);
-                }}
-                placeholder="Page title..."
-                autoFocus
-                className="w-full px-2 py-1 bg-gray-800 text-white text-sm rounded border border-gray-700 focus:outline-none focus:border-blue-500"
-              />
-            </form>
-          )}
 
           {/* Render children */}
           {hasChildren && isExpanded && (
@@ -281,8 +210,9 @@ function SidebarItem({
                       level={level + 1}
                       allDocuments={allDocuments}
                       index={idx}
-                      favorites={favorites}
-                      onToggleFavorite={onToggleFavorite}
+                      onRename={onRename}
+                      onDelete={onDelete}
+                      onMoveRequest={onMoveRequest}
                     />
                   ))}
                   {provided.placeholder as any}
@@ -301,12 +231,20 @@ function SidebarItem({
   }
 }
 
-export function Sidebar({ favorites, setFavorites }: SidebarProps) {
+export function Sidebar({ favorites: _favorites, setFavorites: _setFavorites }: SidebarProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isCreating, setIsCreating] = useState(false);
   const [newDocTitle, setNewDocTitle] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [moveTarget, setMoveTarget] = useState<Document | null>(null);
+  const [moveParentId, setMoveParentId] = useState<string | null>(null);
+  const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
+  const [isMoveLoading, setIsMoveLoading] = useState(false);
+  const { id: currentId } = useParams();
+
+  void _favorites;
+  void _setFavorites;
 
   const { data: documents = [] } = useQuery({
     queryKey: ["documents"],
@@ -331,8 +269,21 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: UpdateDocumentDto }) =>
       api.updateDocument(id, data),
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
+      if (variables.id === currentId) {
+        queryClient.invalidateQueries({ queryKey: ["document", currentId] });
+      }
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteDocument(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      if (currentId === id) {
+        navigate("/");
+      }
     },
   });
 
@@ -346,10 +297,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   const handleDragEnd = (result: any) => {
     const { destination, source, draggableId } = result;
 
-    console.log("Drag ended:", { destination, source, draggableId });
-
     if (!destination) {
-      console.log("No destination - dropped outside");
       return;
     }
 
@@ -357,7 +305,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       destination.droppableId === source.droppableId &&
       destination.index === source.index
     ) {
-      console.log("No movement detected");
       return;
     }
 
@@ -366,7 +313,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     // Check if dropped onto a document (nest operation)
     if (destination.droppableId.startsWith("nest-")) {
       destParentId = destination.droppableId.replace("nest-", "");
-      console.log("Nesting document under:", destParentId);
 
       // Make it a child and set order to 0 (first child)
       updateMutation.mutate({
@@ -389,13 +335,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       source.droppableId === "root"
         ? null
         : source.droppableId.replace("children-", "");
-
-    console.log("Moving document:", {
-      documentId: draggableId,
-      fromParent: sourceParentId,
-      toParent: destParentId,
-      newIndex: destination.index,
-    });
 
     const newOrder = destination.index;
 
@@ -440,14 +379,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
         });
       }
     });
-  };
-
-  const toggleFavorite = (id: string) => {
-    setFavorites(
-      favorites.includes(id)
-        ? favorites.filter((fav) => fav !== id)
-        : [...favorites, id]
-    );
   };
 
   const rootDocuments = sortDocuments(documents.filter((doc) => !doc.parentId));
@@ -535,8 +466,20 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
                     level={0}
                     allDocuments={documents}
                     index={idx}
-                    favorites={favorites}
-                    onToggleFavorite={toggleFavorite}
+                    onRename={async (id, title) => {
+                      await updateMutation.mutateAsync({
+                        id,
+                        data: { title },
+                      });
+                    }}
+                    onDelete={async (id) => {
+                      await deleteMutation.mutateAsync(id);
+                    }}
+                    onMoveRequest={(documentToMove) => {
+                      setMoveTarget(documentToMove);
+                      setMoveParentId(documentToMove.parentId ?? null);
+                      setIsMoveModalOpen(true);
+                    }}
                   />
                 ))}
                 {provided.placeholder as any}
@@ -570,6 +513,46 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
           </div>
         </div>
       </div>
+      {moveTarget && (
+        <MoveDocumentModal
+          isOpen={isMoveModalOpen}
+          isProcessing={isMoveLoading}
+          documents={documents}
+          document={moveTarget}
+          initialParentId={moveParentId}
+          onClose={() => {
+            if (!isMoveLoading) {
+              setIsMoveModalOpen(false);
+              setMoveTarget(null);
+            }
+          }}
+          onConfirm={async (parentId) => {
+            if (!moveTarget?._id) return;
+            setIsMoveLoading(true);
+            try {
+              const siblings = sortDocuments(
+                documents.filter((doc) =>
+                  doc._id === moveTarget._id
+                    ? false
+                    : (doc.parentId ?? null) === parentId
+                )
+              );
+
+              await updateMutation.mutateAsync({
+                id: moveTarget._id,
+                data: {
+                  parentId: parentId ?? null,
+                  order: siblings.length,
+                },
+              });
+              setIsMoveModalOpen(false);
+              setMoveTarget(null);
+            } finally {
+              setIsMoveLoading(false);
+            }
+          }}
+        />
+      )}
     </DragDropContextAny>
   );
 }
