@@ -71,6 +71,33 @@ export async function getDocumentById(id: string): Promise<Document | null> {
   };
 }
 
+export async function getDocumentsByIds(
+  ids: string[]
+): Promise<Document[]> {
+  if (!ids || ids.length === 0) {
+    return [];
+  }
+
+  const db = getDatabase();
+  const objectIds = ids.map((id) => new ObjectId(id));
+  const documents = await db
+    .collection(COLLECTION)
+    .find({ _id: { $in: objectIds } })
+    .toArray();
+
+  return documents.map((doc) => ({
+    _id: doc._id.toString(),
+    title: doc.title,
+    content: doc.content,
+    authorId: doc.authorId,
+    parentId: doc.parentId || null,
+    icon: doc.icon || "📄",
+    order: doc.order ?? 0,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  }));
+}
+
 export async function updateDocument(
   id: string,
   data: UpdateDocumentDto

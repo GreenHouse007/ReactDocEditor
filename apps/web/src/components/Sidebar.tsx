@@ -1,109 +1,268 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { useState, useRef } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Document, UpdateDocumentDto } from "@enfield/types";
-import { IconPicker } from "./IconPicker";
-import { PageOptionsMenu } from "./PageOptionsMenu";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 
-// Workaround for type conflicts between multiple @types/react versions in the monorepo.
-// Cast the DnD components to `any` so they can be used in JSX without TypeScript errors.
 const DragDropContextAny = DragDropContext as any;
 const DroppableAny = Droppable as any;
 const DraggableAny = Draggable as any;
 
-// Helper function to sort documents by order
-function sortDocuments(docs: Document[]): Document[] {
-  return [...docs].sort((a, b) => {
-    const orderA = a.order ?? 999999;
-    const orderB = b.order ?? 999999;
+const sortDocuments = (documents: Document[]): Document[] => {
+  return [...documents].sort((a, b) => {
+    const orderA = a.order ?? 0;
+    const orderB = b.order ?? 0;
+    if (orderA === orderB) {
+      return (a.title || "").localeCompare(b.title || "");
+    }
     return orderA - orderB;
   });
+};
+
+const getDescendantIds = (rootId: string, documents: Document[]): Set<string> => {
+  const descendants = new Set<string>();
+  const stack = [rootId];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    documents.forEach((doc) => {
+      if (doc.parentId === current && doc._id) {
+        descendants.add(doc._id);
+        stack.push(doc._id);
+      }
+    });
+  }
+
+  return descendants;
+};
+
+interface SidebarProps {
+  favorites: string[];
+  setFavorites: (favorites: string[]) => void;
 }
 
 interface SidebarItemProps {
   document: Document;
-  level: number;
   allDocuments: Document[];
+  level: number;
   index: number;
+  activeId?: string;
   favorites: string[];
   onToggleFavorite: (id: string) => void;
+  onRename: (id: string, title: string) => Promise<void> | void;
+  onDelete: (id: string) => void;
+  onMove: (id: string, parentId: string | null) => void;
+  onOpen: (id: string) => void;
+}
+
+interface MoveDialogProps {
+  documents: Document[];
+  currentDocumentId: string;
+  onMove: (parentId: string | null) => void;
+  onClose: () => void;
+}
+
+interface DocumentTreeNode {
+  document: Document;
+  children: DocumentTreeNode[];
+}
+
+const buildDocumentTree = (documents: Document[]): DocumentTreeNode[] => {
+  const nodes = new Map<string, DocumentTreeNode>();
+  const roots: DocumentTreeNode[] = [];
+
+  documents.forEach((doc) => {
+    if (!doc._id) return;
+    nodes.set(doc._id, { document: doc, children: [] });
+  });
+
+  documents.forEach((doc) => {
+    if (!doc._id) return;
+    const node = nodes.get(doc._id);
+    if (!node) return;
+
+    if (doc.parentId && nodes.has(doc.parentId)) {
+      nodes.get(doc.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  const sortNodes = (list: DocumentTreeNode[]) => {
+    list.sort((a, b) => {
+      const orderA = a.document.order ?? 0;
+      const orderB = b.document.order ?? 0;
+      if (orderA === orderB) {
+        return (a.document.title || "").localeCompare(
+          b.document.title || ""
+        );
+      }
+      return orderA - orderB;
+    });
+    list.forEach((child) => sortNodes(child.children));
+  };
+
+  sortNodes(roots);
+  return roots;
+};
+
+const flattenTree = (
+  nodes: DocumentTreeNode[],
+  level = 0,
+  acc: { id: string; title: string; level: number }[] = []
+) => {
+  nodes.forEach((node) => {
+    if (node.document._id) {
+      acc.push({
+        id: node.document._id,
+        title: node.document.title || "Untitled",
+        level,
+      });
+    }
+    if (node.children.length > 0) {
+      flattenTree(node.children, level + 1, acc);
+    }
+  });
+  return acc;
+};
+
+function MoveDialog({
+  documents,
+  currentDocumentId,
+  onMove,
+  onClose,
+}: MoveDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const options = useMemo(() => {
+    const blocked = getDescendantIds(currentDocumentId, documents);
+    blocked.add(currentDocumentId);
+    const available = documents.filter(
+      (doc) => doc._id && !blocked.has(doc._id)
+    );
+    const tree = buildDocumentTree(sortDocuments(available));
+    return flattenTree(tree);
+  }, [currentDocumentId, documents]);
+
+  useEffect(() => {
+    const handleClick = (event: MouseEvent) => {
+      if (dialogRef.current && !dialogRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={dialogRef}
+      className="absolute right-0 top-full z-50 mt-2 w-64 rounded-2xl border border-white/10 bg-slate-900/90 p-3 shadow-xl backdrop-blur-xl"
+    >
+      <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        Move to
+      </div>
+      <button
+        onClick={() => void onMove(null)}
+        className="mb-1 w-full rounded-xl px-3 py-2 text-left text-sm text-slate-200 transition hover:bg-white/10"
+      >
+        Root (no parent)
+      </button>
+      <div className="max-h-60 overflow-y-auto pr-1">
+        {options.length === 0 ? (
+          <p className="px-3 py-6 text-center text-xs text-slate-500">
+            No destinations available.
+          </p>
+        ) : (
+          options.map((option) => (
+            <button
+              key={option.id}
+              onClick={() => void onMove(option.id)}
+              className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-200 transition hover:bg-white/10"
+              style={{ paddingLeft: `${option.level * 16 + 12}px` }}
+            >
+              {option.title}
+            </button>
+          ))
+        )}
+      </div>
+      <button
+        onClick={onClose}
+        className="mt-2 w-full rounded-xl border border-white/10 px-3 py-2 text-sm text-slate-300 transition hover:border-white/20 hover:text-white"
+      >
+        Cancel
+      </button>
+    </div>
+  );
 }
 
 function SidebarItem({
   document,
-  level,
   allDocuments,
+  level,
   index,
+  activeId,
   favorites,
   onToggleFavorite,
+  onRename,
+  onDelete,
+  onMove,
+  onOpen,
 }: SidebarItemProps) {
-  const navigate = useNavigate();
-  const { id: currentId } = useParams();
-  const queryClient = useQueryClient();
   const [isExpanded, setIsExpanded] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
-  const [showIconPicker, setShowIconPicker] = useState(false);
-  const [showOptions, setShowOptions] = useState(false);
-  const [isCreatingChild, setIsCreatingChild] = useState(false);
-  const [childTitle, setChildTitle] = useState("");
-  const iconButtonRef = useRef<HTMLButtonElement>(null);
-  const optionsButtonRef = useRef<HTMLButtonElement>(null);
+  const [showMenu, setShowMenu] = useState(false);
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(document.title || "Untitled");
+  const menuRef = useRef<HTMLDivElement>(null);
+  const childWrapperRef = useRef<HTMLDivElement>(null);
+  const [maxHeight, setMaxHeight] = useState<number | undefined>(undefined);
 
-  const children = sortDocuments(
-    allDocuments.filter((doc) => doc.parentId === document._id)
+  const children = useMemo(
+    () =>
+      sortDocuments(
+        allDocuments.filter((doc) => doc.parentId === document._id)
+      ),
+    [allDocuments, document._id]
   );
+
+  const isActive = activeId === document._id;
   const hasChildren = children.length > 0;
-  const isActive = currentId === document._id;
   const isFavorite = favorites.includes(document._id || "");
 
-  const updateIconMutation = useMutation({
-    mutationFn: (icon: string) => {
-      console.log("Updating icon to:", icon, "for document:", document._id);
-      return api.updateDocument(document._id!, { icon });
-    },
-    onSuccess: () => {
-      console.log("Icon update successful");
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      queryClient.invalidateQueries({ queryKey: ["document", document._id] });
-    },
-    onError: (error) => {
-      console.error("Icon update failed:", error);
-    },
-  });
+  useEffect(() => {
+    setRenameValue(document.title || "Untitled");
+  }, [document.title]);
 
-  const deleteMutation = useMutation({
-    mutationFn: () => api.deleteDocument(document._id!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      if (currentId === document._id) {
-        navigate("/");
+  useEffect(() => {
+    if (childWrapperRef.current) {
+      setMaxHeight(childWrapperRef.current.scrollHeight);
+    }
+  }, [children.length, isExpanded]);
+
+  useEffect(() => {
+    if (!showMenu) return;
+
+    const handleClick = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setShowMenu(false);
       }
-    },
-  });
+    };
 
-  const createChildMutation = useMutation({
-    mutationFn: (title: string) =>
-      api.createDocument({
-        title,
-        authorId: "demo-user",
-        parentId: document._id,
-        icon: "📄",
-      }),
-    onSuccess: (newDoc) => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      setIsCreatingChild(false);
-      setChildTitle("");
-      setIsExpanded(true);
-      navigate(`/document/${newDoc._id}`);
-    },
-  });
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showMenu]);
 
-  const handleCreateChild = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (childTitle.trim()) {
-      createChildMutation.mutate(childTitle);
+  const handleRenameSubmit = () => {
+    const trimmed = renameValue.trim();
+    setIsRenaming(false);
+    if (trimmed && trimmed !== document.title) {
+      void onRename(document._id!, trimmed);
+    } else {
+      setRenameValue(document.title || "Untitled");
     }
   };
 
@@ -113,179 +272,194 @@ function SidebarItem({
         <div
           ref={provided.innerRef}
           {...provided.draggableProps}
-          className={snapshot.isDragging ? "opacity-50" : ""}
+          className={snapshot.isDragging ? "opacity-60" : ""}
         >
-          {/* Wrap the item in a Droppable so we can drop onto it */}
-          <DroppableAny
-            droppableId={`nest-${document._id}`}
-            type="document"
-            isDropDisabled={false}
-          >
+          <DroppableAny droppableId={`nest-${document._id}`} type="document">
             {(droppableProvided: any, droppableSnapshot: any) => (
               <div
                 ref={droppableProvided.innerRef}
                 {...droppableProvided.droppableProps}
-                className={`
-                ${
+                className={
                   droppableSnapshot.isDraggingOver
-                    ? "bg-blue-900/30 ring-2 ring-blue-500/50"
+                    ? "rounded-xl bg-blue-500/20"
                     : ""
                 }
-              `}
               >
                 <div
-                  className={`
-                  relative flex items-center gap-1 px-2 py-1 rounded cursor-pointer group
-                  hover:bg-gray-800/50 transition-colors
-                  ${isActive ? "bg-gray-800" : ""}
-                `}
-                  style={{ paddingLeft: `${level * 12 + 8}px` }}
+                  {...provided.dragHandleProps}
                   onMouseEnter={() => setIsHovered(true)}
-                  onMouseLeave={() => setIsHovered(false)}
-                  onClick={() => navigate(`/document/${document._id}`)}
+                  onMouseLeave={() => {
+                    setIsHovered(false);
+                    setShowMenu(false);
+                  }}
+                  onClick={() => onOpen(document._id!)}
+                  className={`relative flex items-center gap-2 rounded-xl px-3 py-2 transition-colors duration-150 ${
+                    isActive
+                      ? "bg-slate-800/80 ring-1 ring-blue-500/40"
+                      : "hover:bg-slate-800/50"
+                  }`}
+                  style={{ paddingLeft: `${level * 18 + 12}px` }}
                 >
-                  {/* Drag handle */}
-                  <div {...provided.dragHandleProps} className="flex-shrink-0">
-                    <div className="w-4 h-4 flex items-center justify-center text-gray-600 hover:text-gray-400 opacity-0 group-hover:opacity-100">
-                      ⋮⋮
-                    </div>
-                  </div>
-
-                  {/* Expand/collapse arrow */}
                   {hasChildren ? (
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setIsExpanded(!isExpanded);
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setIsExpanded((prev) => !prev);
                       }}
-                      className="w-4 h-4 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                      className="mr-1 flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-xs text-slate-300 transition hover:border-white/20 hover:text-white"
                     >
-                      <span className="text-xs text-gray-400">
-                        {isExpanded ? "▼" : "▶"}
-                      </span>
+                      {isExpanded ? "▾" : "▸"}
                     </button>
                   ) : (
-                    <div className="w-4 flex-shrink-0" />
+                    <span className="mr-1 block h-6 w-6" />
                   )}
 
-                  {/* Icon */}
-                  <button
-                    ref={iconButtonRef}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowIconPicker(true);
-                    }}
-                    className="text-lg hover:scale-110 transition-transform flex-shrink-0"
-                  >
-                    {document.icon || "📄"}
-                  </button>
-
-                  {showIconPicker && (
-                    <IconPicker
-                      currentIcon={document.icon || "📄"}
-                      onSelect={(icon) => updateIconMutation.mutate(icon)}
-                      onClose={() => setShowIconPicker(false)}
-                      triggerRef={iconButtonRef.current}
+                  {isRenaming ? (
+                    <input
+                      value={renameValue}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                      onBlur={handleRenameSubmit}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          handleRenameSubmit();
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          setIsRenaming(false);
+                          setRenameValue(document.title || "Untitled");
+                        }
+                      }}
+                      autoFocus
+                      className="flex-1 rounded-md border border-white/10 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
                     />
+                  ) : (
+                    <span className="flex-1 truncate text-sm font-medium text-slate-100">
+                      {document.title || "Untitled"}
+                    </span>
                   )}
 
-                  {/* Title */}
-                  <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
-                    {document.title || "Untitled"}
-                  </span>
-
-                  {/* Favorite star */}
-                  {isHovered && (
+                  <div className="flex items-center gap-1">
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
+                      onClick={(event) => {
+                        event.stopPropagation();
                         onToggleFavorite(document._id!);
                       }}
-                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                      className={`flex h-6 w-6 items-center justify-center rounded-full text-xs transition ${
+                        isFavorite
+                          ? "text-amber-400 hover:text-amber-300"
+                          : "text-slate-500 hover:text-slate-300"
+                      } ${isHovered ? "opacity-100" : "opacity-0"}`}
                     >
-                      <span
-                        className={
-                          isFavorite ? "text-yellow-400" : "text-gray-600"
-                        }
+                      {isFavorite ? "★" : "☆"}
+                    </button>
+
+                    <div className="relative" ref={menuRef}>
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setShowMenu((prev) => !prev);
+                        }}
+                        className={`flex h-6 w-6 items-center justify-center rounded-full text-sm transition ${
+                          isHovered ? "text-slate-400" : "text-slate-600"
+                        } hover:text-white`}
                       >
-                        {isFavorite ? "★" : "☆"}
-                      </span>
-                    </button>
-                  )}
+                        ⋮
+                      </button>
 
-                  {/* Options button */}
-                  {isHovered && (
-                    <button
-                      ref={optionsButtonRef}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowOptions(true);
-                      }}
-                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
-                    >
-                      <span className="text-gray-400">⋯</span>
-                    </button>
-                  )}
+                      {showMenu && (
+                        <div className="absolute right-0 top-full z-50 mt-2 w-40 rounded-2xl border border-white/10 bg-slate-900/95 p-2 shadow-xl backdrop-blur-lg">
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setShowMenu(false);
+                              setIsRenaming(true);
+                            }}
+                            className="block w-full rounded-xl px-3 py-2 text-left text-sm text-slate-200 transition hover:bg-white/10"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setShowMenu(false);
+                              setShowMoveDialog(true);
+                            }}
+                            className="block w-full rounded-xl px-3 py-2 text-left text-sm text-slate-200 transition hover:bg-white/10"
+                          >
+                            Move
+                          </button>
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setShowMenu(false);
+                              if (
+                                confirm(
+                                  `Delete "${document.title || "Untitled"}" and its nested pages?`
+                                )
+                              ) {
+                                onDelete(document._id!);
+                              }
+                            }}
+                            className="block w-full rounded-xl px-3 py-2 text-left text-sm text-rose-300 transition hover:bg-rose-500/20"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
 
-                  {showOptions && (
-                    <PageOptionsMenu
-                      onAddChild={() => setIsCreatingChild(true)}
-                      onDelete={() => {
-                        if (confirm(`Delete "${document.title}"?`)) {
-                          deleteMutation.mutate();
-                        }
-                      }}
-                      onClose={() => setShowOptions(false)}
-                      triggerRef={optionsButtonRef.current}
-                    />
-                  )}
+                      {showMoveDialog && (
+                        <MoveDialog
+                          documents={allDocuments}
+                          currentDocumentId={document._id!}
+                          onMove={(parentId) => {
+                            setShowMoveDialog(false);
+                            void onMove(document._id!, parentId);
+                          }}
+                          onClose={() => setShowMoveDialog(false)}
+                        />
+                      )}
+                    </div>
+                  </div>
                 </div>
                 {droppableProvided.placeholder}
               </div>
             )}
           </DroppableAny>
 
-          {/* Create child form */}
-          {isCreatingChild && (
-            <form
-              onSubmit={handleCreateChild}
-              style={{ paddingLeft: `${(level + 1) * 12 + 32}px` }}
-              className="px-2 py-1"
-            >
-              <input
-                type="text"
-                value={childTitle}
-                onChange={(e) => setChildTitle(e.target.value)}
-                onBlur={() => {
-                  if (!childTitle.trim()) setIsCreatingChild(false);
-                }}
-                placeholder="Page title..."
-                autoFocus
-                className="w-full px-2 py-1 bg-gray-800 text-white text-sm rounded border border-gray-700 focus:outline-none focus:border-blue-500"
-              />
-            </form>
-          )}
-
-          {/* Render children */}
-          {hasChildren && isExpanded && (
-            <DroppableAny
-              droppableId={`children-${document._id}`}
-              type="document"
-            >
-              {(provided: any) => (
-                <div ref={provided.innerRef} {...provided.droppableProps}>
-                  {children.map((child, idx) => (
-                    <SidebarItem
-                      key={child._id}
-                      document={child}
-                      level={level + 1}
-                      allDocuments={allDocuments}
-                      index={idx}
-                      favorites={favorites}
-                      onToggleFavorite={onToggleFavorite}
-                    />
-                  ))}
-                  {provided.placeholder as any}
+          {hasChildren && (
+            <DroppableAny droppableId={`children-${document._id}`} type="document">
+              {(providedChildren: any) => (
+                <div
+                  ref={providedChildren.innerRef}
+                  {...providedChildren.droppableProps}
+                  className="overflow-hidden"
+                  style={{
+                    maxHeight: isExpanded ? maxHeight ?? 1200 : 0,
+                    opacity: isExpanded ? 1 : 0,
+                    transition: "max-height 0.3s ease, opacity 0.2s ease",
+                  }}
+                >
+                  <div ref={childWrapperRef} className="space-y-1">
+                    {children.map((child, childIndex) => (
+                      <SidebarItem
+                        key={child._id}
+                        document={child}
+                        allDocuments={allDocuments}
+                        level={level + 1}
+                        index={childIndex}
+                        activeId={activeId}
+                        favorites={favorites}
+                        onToggleFavorite={onToggleFavorite}
+                        onRename={onRename}
+                        onDelete={onDelete}
+                        onMove={onMove}
+                        onOpen={onOpen}
+                      />
+                    ))}
+                    {providedChildren.placeholder}
+                  </div>
                 </div>
               )}
             </DroppableAny>
@@ -294,15 +468,11 @@ function SidebarItem({
       )}
     </DraggableAny>
   );
-
-  interface SidebarProps {
-    favorites: string[];
-    setFavorites: (favorites: string[]) => void;
-  }
 }
 
 export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   const navigate = useNavigate();
+  const { id: activeId } = useParams();
   const queryClient = useQueryClient();
   const [isCreating, setIsCreating] = useState(false);
   const [newDocTitle, setNewDocTitle] = useState("");
@@ -320,126 +490,58 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
         authorId: "demo-user",
         icon: "📄",
       }),
-    onSuccess: (document) => {
+    onSuccess: (doc) => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
       setIsCreating(false);
       setNewDocTitle("");
-      navigate(`/document/${document._id}`);
+      navigate(`/document/${doc._id}`);
     },
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: UpdateDocumentDto }) =>
       api.updateDocument(id, data),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
+      if (variables?.data?.title) {
+        queryClient.invalidateQueries({ queryKey: ["document", variables.id] });
+      }
     },
   });
 
-  const handleCreateSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteDocument(id),
+    onSuccess: (_data, deletedId) => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      if (activeId === deletedId) {
+        navigate("/");
+      }
+    },
+  });
+
+  const handleCreateSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
     if (newDocTitle.trim()) {
-      createMutation.mutate(newDocTitle);
+      createMutation.mutate(newDocTitle.trim());
     }
   };
 
-  const handleDragEnd = (result: any) => {
-    const { destination, source, draggableId } = result;
+  const handleRename = async (id: string, title: string) => {
+    await updateMutation.mutateAsync({ id, data: { title } });
+  };
 
-    console.log("Drag ended:", { destination, source, draggableId });
-
-    if (!destination) {
-      console.log("No destination - dropped outside");
-      return;
-    }
-
-    if (
-      destination.droppableId === source.droppableId &&
-      destination.index === source.index
-    ) {
-      console.log("No movement detected");
-      return;
-    }
-
-    let destParentId: string | null = null;
-
-    // Check if dropped onto a document (nest operation)
-    if (destination.droppableId.startsWith("nest-")) {
-      destParentId = destination.droppableId.replace("nest-", "");
-      console.log("Nesting document under:", destParentId);
-
-      // Make it a child and set order to 0 (first child)
-      updateMutation.mutate({
-        id: draggableId,
-        data: {
-          parentId: destParentId,
-          order: 0,
-        },
-      });
-      return;
-    }
-
-    // Normal drop in a list
-    destParentId =
-      destination.droppableId === "root"
-        ? null
-        : destination.droppableId.replace("children-", "");
-
-    const sourceParentId =
-      source.droppableId === "root"
-        ? null
-        : source.droppableId.replace("children-", "");
-
-    console.log("Moving document:", {
-      documentId: draggableId,
-      fromParent: sourceParentId,
-      toParent: destParentId,
-      newIndex: destination.index,
+  const handleMove = async (id: string, parentId: string | null) => {
+    const siblingCount = documents.filter(
+      (doc) => (doc.parentId ?? null) === (parentId ?? null) && doc._id !== id
+    ).length;
+    await updateMutation.mutateAsync({
+      id,
+      data: { parentId, order: siblingCount },
     });
+  };
 
-    const newOrder = destination.index;
-
-    // Update the dragged document
-    updateMutation.mutate({
-      id: draggableId,
-      data: {
-        parentId: destParentId,
-        order: newOrder,
-      },
-    });
-
-    // Adjust orders for sibling documents
-    const destParentIdStr = destParentId;
-    const sourceParentIdStr = sourceParentId;
-
-    const siblings = sortDocuments(
-      documents.filter((d) => (d.parentId ?? null) === destParentIdStr)
-    );
-
-    siblings.forEach((doc, idx) => {
-      if (doc._id === draggableId) return;
-
-      let adjustedIdx = idx;
-
-      if (destParentIdStr === sourceParentIdStr) {
-        if (source.index < destination.index) {
-          if (idx > source.index && idx <= destination.index) {
-            adjustedIdx = idx - 1;
-          }
-        } else if (source.index > destination.index) {
-          if (idx >= destination.index && idx < source.index) {
-            adjustedIdx = idx + 1;
-          }
-        }
-      }
-
-      if (adjustedIdx >= newOrder) {
-        updateMutation.mutate({
-          id: doc._id!,
-          data: { order: adjustedIdx + 1 },
-        });
-      }
-    });
+  const handleDelete = (id: string) => {
+    deleteMutation.mutate(id);
   };
 
   const toggleFavorite = (id: string) => {
@@ -450,122 +552,221 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     );
   };
 
-  const rootDocuments = sortDocuments(documents.filter((doc) => !doc.parentId));
+  const openDocument = (id: string) => {
+    navigate(`/document/${id}`);
+  };
 
-  const filteredRootDocs = searchQuery
-    ? rootDocuments.filter((doc) =>
-        doc.title.toLowerCase().includes(searchQuery.toLowerCase())
+  const rootDocuments = useMemo(
+    () => sortDocuments(documents.filter((doc) => !doc.parentId)),
+    [documents]
+  );
+
+  const filteredRootDocs = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return rootDocuments;
+    }
+    const lower = searchQuery.toLowerCase();
+    return rootDocuments.filter((doc) =>
+      (doc.title || "Untitled").toLowerCase().includes(lower)
+    );
+  }, [rootDocuments, searchQuery]);
+
+  const handleDragEnd = async (result: any) => {
+    const { destination, source, draggableId } = result;
+    if (!destination) return;
+
+    const destDroppableId: string = destination.droppableId;
+    const sourceDroppableId: string = source.droppableId;
+
+    const destinationParentId =
+      destDroppableId === "root"
+        ? null
+        : destDroppableId.startsWith("children-")
+        ? destDroppableId.replace("children-", "")
+        : destDroppableId.startsWith("nest-")
+        ? destDroppableId.replace("nest-", "")
+        : null;
+
+    const sourceParentId =
+      sourceDroppableId === "root"
+        ? null
+        : sourceDroppableId.startsWith("children-")
+        ? sourceDroppableId.replace("children-", "")
+        : null;
+
+    if (
+      destination.droppableId === sourceDroppableId &&
+      destination.index === source.index &&
+      (destinationParentId ?? null) === (sourceParentId ?? null)
+    ) {
+      return;
+    }
+
+    const movingDocument = documents.find((doc) => doc._id === draggableId);
+    if (!movingDocument) {
+      return;
+    }
+
+    const destinationSiblings = sortDocuments(
+      documents.filter(
+        (doc) =>
+          doc._id !== draggableId &&
+          (doc.parentId ?? null) === (destinationParentId ?? null)
       )
-    : rootDocuments;
+    );
+
+    const insertionIndex = destDroppableId.startsWith("nest-")
+      ? destinationSiblings.length
+      : destination.index;
+
+    const virtualDoc: Document = {
+      ...movingDocument,
+      parentId: destinationParentId ?? null,
+      order: insertionIndex,
+    };
+
+    destinationSiblings.splice(insertionIndex, 0, virtualDoc);
+
+    const updates: Promise<unknown>[] = destinationSiblings.map((doc, idx) =>
+      api.updateDocument(doc._id!, {
+        parentId: destinationParentId,
+        order: idx,
+      })
+    );
+
+    if ((destinationParentId ?? null) !== (sourceParentId ?? null)) {
+      const remainingSiblings = sortDocuments(
+        documents.filter(
+          (doc) =>
+            doc._id !== draggableId &&
+            (doc.parentId ?? null) === (sourceParentId ?? null)
+        )
+      );
+
+      remainingSiblings.forEach((doc, idx) => {
+        updates.push(
+          api.updateDocument(doc._id!, {
+            order: idx,
+          })
+        );
+      });
+    }
+
+    try {
+      await Promise.all(updates);
+    } catch (error) {
+      console.error("Failed to update document order", error);
+    } finally {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+    }
+  };
 
   return (
     <DragDropContextAny onDragEnd={handleDragEnd}>
-      <div className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col h-screen">
-        {/* Header */}
-        <div className="p-4 border-b border-gray-800">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold">E</span>
+      <div className="flex h-screen w-72 flex-col border-r border-slate-800/70 bg-slate-950/80 text-white backdrop-blur-xl">
+        <div className="border-b border-slate-800/70 px-5 py-6">
+          <div className="mb-5 flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-500 text-xl font-bold text-white shadow-lg shadow-blue-500/40">
+              E
             </div>
             <div>
-              <div className="text-white font-semibold text-sm">Enfield</div>
-              <div className="text-gray-400 text-xs">World Builder</div>
+              <p className="text-sm font-semibold text-white">Enfield</p>
+              <p className="text-xs text-slate-400">World Builder</p>
             </div>
           </div>
 
           <button
             onClick={() => navigate("/")}
-            className="w-full px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded text-sm text-gray-200 transition-colors mb-3"
+            className="mb-3 flex w-full items-center justify-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/10"
           >
-            🏠 Dashboard
+            Dashboard
           </button>
 
-          {/* Search */}
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search pages..."
-            className="w-full px-3 py-2 bg-gray-800 text-white text-sm rounded border border-gray-700 focus:outline-none focus:border-blue-500"
-          />
+          <div className="relative">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search pages..."
+              className="w-full rounded-xl border border-white/10 bg-slate-900/70 px-4 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+            />
+          </div>
         </div>
 
-        {/* Pages Section */}
-        <div className="flex-1 overflow-y-auto p-2">
-          <div className="flex items-center justify-between px-2 py-2">
-            <span className="text-xs text-gray-400 uppercase font-semibold">
-              Pages
-            </span>
+        <div className="flex-1 overflow-y-auto px-3 py-4">
+          <div className="mb-2 flex items-center justify-between px-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <span>Pages</span>
             <button
               onClick={() => setIsCreating(true)}
-              className="w-5 h-5 flex items-center justify-center hover:bg-gray-800 rounded text-gray-400 hover:text-white transition-colors"
-              title="Add page"
+              className="flex h-6 w-6 items-center justify-center rounded-lg border border-white/10 text-slate-300 transition hover:border-white/20 hover:text-white"
+              title="New page"
             >
               +
             </button>
           </div>
 
           {isCreating && (
-            <form onSubmit={handleCreateSubmit} className="px-2 mb-2">
+            <form onSubmit={handleCreateSubmit} className="mb-3 px-2">
               <input
                 type="text"
                 value={newDocTitle}
-                onChange={(e) => setNewDocTitle(e.target.value)}
+                onChange={(event) => setNewDocTitle(event.target.value)}
                 onBlur={() => {
-                  if (!newDocTitle.trim()) setIsCreating(false);
+                  if (!newDocTitle.trim()) {
+                    setIsCreating(false);
+                    setNewDocTitle("");
+                  }
                 }}
-                placeholder="Page title..."
                 autoFocus
-                className="w-full px-2 py-1 bg-gray-800 text-white text-sm rounded border border-gray-700 focus:outline-none focus:border-blue-500"
+                placeholder="Page title..."
+                className="w-full rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
               />
             </form>
           )}
 
           <DroppableAny droppableId="root" type="document">
-            {(provided: any) => (
+            {(providedRoot: any) => (
               <div
-                ref={provided.innerRef}
-                {...provided.droppableProps}
-                className="space-y-0.5"
+                ref={providedRoot.innerRef}
+                {...providedRoot.droppableProps}
+                className="space-y-1"
               >
                 {filteredRootDocs.map((doc, idx) => (
                   <SidebarItem
                     key={doc._id}
                     document={doc}
-                    level={0}
                     allDocuments={documents}
+                    level={0}
                     index={idx}
+                    activeId={activeId}
                     favorites={favorites}
                     onToggleFavorite={toggleFavorite}
+                    onRename={handleRename}
+                    onDelete={handleDelete}
+                    onMove={handleMove}
+                    onOpen={openDocument}
                   />
                 ))}
-                {provided.placeholder as any}
+                {providedRoot.placeholder}
               </div>
             )}
           </DroppableAny>
 
           {filteredRootDocs.length === 0 && !isCreating && (
-            <div className="px-2 py-8 text-center text-gray-500 text-sm">
-              {searchQuery
-                ? "No pages found"
-                : "No pages yet. Click + to create one."}
+            <div className="px-2 py-12 text-center text-sm text-slate-500">
+              {searchQuery ? "No pages match your search." : "No pages yet. Create your first one."}
             </div>
           )}
         </div>
 
-        {/* User Section */}
-        <div className="p-4 border-t border-gray-800">
+        <div className="border-t border-slate-800/70 px-5 py-5">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center">
-              <span className="text-white font-semibold text-sm">A</span>
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-500 text-sm font-semibold">
+              A
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-white text-sm font-medium truncate">
-                Demo User
-              </div>
-              <div className="text-gray-400 text-xs truncate">
-                demo@enfield.app
-              </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-white">Demo User</p>
+              <p className="truncate text-xs text-slate-400">demo@enfield.app</p>
             </div>
           </div>
         </div>
@@ -573,3 +774,4 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     </DragDropContextAny>
   );
 }
+
