@@ -211,11 +211,11 @@ export function Editor({
           />
         </label>
         <button
-          onClick={() => editor.chain().focus().setHardBreak().run()}
+          onClick={() => editor.chain().focus().setHorizontalRule().run()}
           className="rounded bg-gray-700 px-3 py-1 text-gray-200 transition-colors hover:bg-gray-600"
           type="button"
         >
-          Line Break
+          Horizontal Line
         </button>
       </div>
 

@@ -1,5 +1,6 @@
 import { Sidebar } from "./Sidebar";
-import { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { IndexProvider } from "../contexts/IndexContext";
 
 interface LayoutProps {
   children: ReactNode;
@@ -8,10 +9,14 @@ interface LayoutProps {
 }
 
 export function Layout({ children, favorites, setFavorites }: LayoutProps) {
+  const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
+
   return (
-    <div className="flex h-screen bg-gray-900 overflow-hidden">
-      <Sidebar favorites={favorites} setFavorites={setFavorites} />
-      <main className="flex-1 overflow-y-auto">{children}</main>
-    </div>
+    <IndexProvider value={{ selectedIndexId, setSelectedIndexId }}>
+      <div className="flex h-screen overflow-hidden bg-gray-900">
+        <Sidebar favorites={favorites} setFavorites={setFavorites} />
+        <main className="flex-1 overflow-y-auto">{children}</main>
+      </div>
+    </IndexProvider>
   );
 }

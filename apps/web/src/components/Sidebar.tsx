@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -16,6 +17,7 @@ import {
   Draggable,
   type DropResult,
 } from "@hello-pangea/dnd";
+import { useIndexContext } from "../contexts/IndexContext";
 
 // Workaround for type conflicts between multiple @types/react versions in the monorepo.
 // Cast the DnD components to `any` so they can be used in JSX without TypeScript errors.
@@ -85,7 +87,6 @@ function SidebarItem({
   const navigate = useNavigate();
   const { id: currentId } = useParams();
   const queryClient = useQueryClient();
-  const [isHovered, setIsHovered] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const [isCreatingChild, setIsCreatingChild] = useState(false);
   const [childTitle, setChildTitle] = useState("");
@@ -147,29 +148,20 @@ function SidebarItem({
                 }`}
               >
                 <div
-                  className={`flex items-center gap-2 py-1 pr-2 text-sm text-gray-200 transition-colors ${
+                  {...provided.dragHandleProps}
+                  className={`group flex items-center gap-2 py-1 pr-2 text-sm text-gray-200 transition-colors ${
                     isActive ? "bg-gray-800" : "hover:bg-gray-800/60"
                   } ${snapshot.isDragging ? "opacity-75" : ""}`}
                   style={{ paddingLeft: `${level * 16 + 12}px` }}
-                  onMouseEnter={() => setIsHovered(true)}
-                  onMouseLeave={() => setIsHovered(false)}
                   onClick={() => navigate(`/document/${document._id}`)}
                 >
-                  <button
-                    {...provided.dragHandleProps}
-                    onClick={(event) => event.stopPropagation()}
-                    className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-xs text-gray-500 hover:text-gray-300"
-                    title="Drag to reorder"
-                  >
-                    ⠿
-                  </button>
                   {hasChildren ? (
                     <button
                       onClick={(event) => {
                         event.stopPropagation();
                         onToggleExpand();
                       }}
-                      className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-gray-500 hover:text-gray-300"
+                      className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-gray-500 transition-colors hover:text-gray-200"
                       title={isExpanded ? "Collapse" : "Expand"}
                     >
                       {isExpanded ? "▾" : "▸"}
@@ -177,40 +169,34 @@ function SidebarItem({
                   ) : (
                     <span className="w-5 flex-shrink-0" />
                   )}
-                  <span className="flex-1 truncate">
-                    {document.title || "Untitled"}
-                  </span>
-                  {isHovered && (
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onToggleFavorite(document._id!);
-                      }}
-                      className="flex h-6 w-6 items-center justify-center rounded text-base transition-colors hover:bg-gray-700"
-                      title="Toggle favorite"
-                    >
-                      <span
-                        className={
-                          isFavorite ? "text-yellow-400" : "text-gray-500"
-                        }
-                      >
-                        {isFavorite ? "★" : "☆"}
-                      </span>
-                    </button>
-                  )}
-                  {isHovered && (
-                    <button
-                      ref={optionsButtonRef}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setShowOptions((prev) => !prev);
-                      }}
-                      className="flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-700"
-                      title="More options"
-                    >
-                      ⋯
-                    </button>
-                  )}
+                  <span className="flex-1 truncate">{document.title || "Untitled"}</span>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onToggleFavorite(document._id!);
+                    }}
+                    className={`flex h-6 w-6 items-center justify-center rounded text-base transition-opacity ${
+                      isFavorite
+                        ? "text-yellow-400"
+                        : "text-gray-500 group-hover:opacity-100"
+                    } ${isFavorite ? "opacity-100" : "opacity-0"}`}
+                    title="Toggle favorite"
+                  >
+                    {isFavorite ? "★" : "☆"}
+                  </button>
+                  <button
+                    ref={optionsButtonRef}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setShowOptions((prev) => !prev);
+                    }}
+                    className={`flex h-6 w-6 items-center justify-center rounded text-gray-400 transition-opacity hover:text-white ${
+                      showOptions ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                    }`}
+                    title="More options"
+                  >
+                    ⋯
+                  </button>
                 </div>
                 {dropProvided.placeholder}
               </div>
@@ -250,7 +236,7 @@ function SidebarItem({
                 }}
                 placeholder="Page title..."
                 autoFocus
-                className="w-full rounded border border-gray-700 bg-gray-800 px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                className="w-full rounded border border-gray-700 bg-gray-800 px-2 py-1 text-sm text-white focus:border-blue-500 focus:outline-none"
               />
             </form>
           )}
@@ -270,27 +256,104 @@ interface SidebarProps {
 export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [isCreating, setIsCreating] = useState(false);
-  const [newDocTitle, setNewDocTitle] = useState("");
+  const { selectedIndexId, setSelectedIndexId } = useIndexContext();
+  const [isCreatingPage, setIsCreatingPage] = useState(false);
+  const [newPageTitle, setNewPageTitle] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [isCreatingIndex, setIsCreatingIndex] = useState(false);
+  const [newIndexTitle, setNewIndexTitle] = useState("");
 
   const { data: documents = [] } = useQuery({
     queryKey: ["documents"],
     queryFn: api.getDocuments,
   });
 
-  useEffect(() => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      documents.forEach((doc) => {
-        if (!doc.parentId && doc._id) {
-          next.add(doc._id);
-        }
-      });
-      return next;
+  const documentMap = useMemo(() => {
+    const map = new Map<string, Document>();
+    documents.forEach((doc) => {
+      if (doc._id) {
+        map.set(doc._id, doc);
+      }
     });
+    return map;
   }, [documents]);
+
+  const getRootId = useCallback((id: string | null | undefined): string | null => {
+    if (!id) {
+      return null;
+    }
+
+    let current = documentMap.get(id);
+    let currentId = current?._id ?? null;
+    const visited = new Set<string>();
+
+    while (current && current.parentId) {
+      if (visited.has(current._id!)) {
+        break;
+      }
+
+      visited.add(current._id!);
+      const next = documentMap.get(current.parentId);
+      if (!next) {
+        break;
+      }
+      current = next;
+      currentId = current._id ?? currentId;
+    }
+
+    return currentId;
+  }, [documentMap]);
+
+  const indexes = useMemo(
+    () => sortDocuments(documents.filter((doc) => !doc.parentId)),
+    [documents]
+  );
+
+  useEffect(() => {
+    if (indexes.length === 0) {
+      if (selectedIndexId !== null) {
+        setSelectedIndexId(null);
+      }
+      return;
+    }
+
+    if (!selectedIndexId || !indexes.some((doc) => doc._id === selectedIndexId)) {
+      const firstId = indexes[0]._id ?? null;
+      if (firstId && firstId !== selectedIndexId) {
+        setSelectedIndexId(firstId);
+      }
+    }
+  }, [indexes, selectedIndexId, setSelectedIndexId]);
+
+  const selectedIndex = useMemo(() => {
+    if (!indexes.length) {
+      return null;
+    }
+
+    if (!selectedIndexId) {
+      return indexes[0] ?? null;
+    }
+
+    return indexes.find((doc) => doc._id === selectedIndexId) ?? indexes[0] ?? null;
+  }, [indexes, selectedIndexId]);
+
+  const documentsInIndex = useMemo(() => {
+    if (!selectedIndex?._id) {
+      return [] as Document[];
+    }
+
+    return documents.filter((doc) => {
+      if (!doc._id) {
+        return false;
+      }
+      return getRootId(doc._id) === selectedIndex._id;
+    });
+  }, [documents, selectedIndex, getRootId]);
+
+  useEffect(() => {
+    setExpandedIds(new Set());
+  }, [selectedIndex?._id]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
@@ -300,68 +363,57 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     }
 
     const matches = new Set<string>();
-    const lookup = new Map<string, Document>();
 
-    documents.forEach((doc) => {
+    documentsInIndex.forEach((doc) => {
       if (!doc._id) {
         return;
       }
 
-      lookup.set(doc._id, doc);
-
       if ((doc.title || "Untitled").toLowerCase().includes(normalizedQuery)) {
         matches.add(doc._id);
+
+        let parentId = documentMap.get(doc._id)?.parentId ?? null;
+        while (parentId) {
+          matches.add(parentId);
+          parentId = documentMap.get(parentId)?.parentId ?? null;
+        }
       }
-    });
-
-    const includeAncestors = (id: string | null | undefined) => {
-      if (!id) {
-        return;
-      }
-
-      if (matches.has(id)) {
-        return;
-      }
-
-      matches.add(id);
-      const parent = lookup.get(id)?.parentId ?? null;
-      includeAncestors(parent);
-    };
-
-    Array.from(matches).forEach((id) => {
-      const parent = lookup.get(id)?.parentId ?? null;
-      includeAncestors(parent);
     });
 
     return matches;
-  }, [documents, normalizedQuery]);
+  }, [documentsInIndex, documentMap, normalizedQuery]);
 
   useEffect(() => {
     if (!matchSet || matchSet.size === 0) {
       return;
     }
 
-    const lookup = new Map<string, Document>();
-    documents.forEach((doc) => {
-      if (doc._id) {
-        lookup.set(doc._id, doc);
-      }
-    });
-
     setExpandedIds((prev) => {
       const next = new Set(prev);
-      matchSet.forEach((id) => {
-        let parentId = lookup.get(id)?.parentId ?? null;
-        while (parentId) {
-          next.add(parentId);
-          parentId = lookup.get(parentId)?.parentId ?? null;
-        }
-      });
+      matchSet.forEach((id) => next.add(id));
       return next;
     });
-  }, [matchSet, documents]);
+  }, [matchSet]);
 
-  const createMutation = useMutation({
+  const createPageMutation = useMutation({
+    mutationFn: (title: string) =>
+      api.createDocument({
+        title,
+        authorId: "demo-user",
+        parentId: selectedIndex?._id ?? null,
+      }),
+    onSuccess: (document) => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      setIsCreatingPage(false);
+      setNewPageTitle("");
+      if (document.parentId) {
+        setExpandedIds((prev) => new Set(prev).add(document.parentId!));
+      }
+      navigate(`/document/${document._id}`);
+    },
+  });
+
+  const createIndexMutation = useMutation({
     mutationFn: (title: string) =>
       api.createDocument({
         title,
@@ -369,9 +421,11 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       }),
     onSuccess: (document) => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
-      setIsCreating(false);
-      setNewDocTitle("");
-      navigate(`/document/${document._id}`);
+      setIsCreatingIndex(false);
+      setNewIndexTitle("");
+      if (document._id) {
+        setSelectedIndexId(document._id);
+      }
     },
   });
 
@@ -389,10 +443,20 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     },
   });
 
-  const handleCreateSubmit = (event: React.FormEvent) => {
+  const handleCreatePageSubmit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (newDocTitle.trim()) {
-      createMutation.mutate(newDocTitle.trim());
+    if (!selectedIndex?._id) {
+      return;
+    }
+    if (newPageTitle.trim()) {
+      createPageMutation.mutate(newPageTitle.trim());
+    }
+  };
+
+  const handleCreateIndexSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (newIndexTitle.trim()) {
+      createIndexMutation.mutate(newIndexTitle.trim());
     }
   };
 
@@ -413,26 +477,28 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   };
 
   const parseListParentId = (droppableId: string): string | null => {
-    if (droppableId === "list:root") {
+    if (!droppableId.startsWith("list:")) {
       return null;
     }
-
-    if (droppableId.startsWith("list:")) {
-      const id = droppableId.replace("list:", "");
-      return id || null;
+    const id = droppableId.replace("list:", "");
+    if (id === "none") {
+      return null;
     }
-
-    return null;
+    return id;
   };
 
   const handleDragEnd = async (result: DropResult) => {
+    if (!selectedIndex?._id) {
+      return;
+    }
+
     const { destination, source, draggableId } = result;
 
     if (!destination) {
       return;
     }
 
-    const movingDoc = documents.find((doc) => doc._id === draggableId);
+    const movingDoc = documentsInIndex.find((doc) => doc._id === draggableId);
     if (!movingDoc) {
       return;
     }
@@ -450,7 +516,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
 
     const getSiblings = (parentId: string | null) =>
       sortDocuments(
-        documents.filter((doc) => (doc.parentId ?? null) === parentId)
+        documentsInIndex.filter((doc) => (doc.parentId ?? null) === parentId)
       );
 
     const reindexSiblings = (
@@ -487,7 +553,11 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
           return;
         }
 
-        if (isDescendant(documents, destParentId, draggableId)) {
+        if (isDescendant(documentsInIndex, destParentId, draggableId)) {
+          return;
+        }
+
+        if (getRootId(destParentId) !== selectedIndex._id) {
           return;
         }
 
@@ -508,15 +578,19 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       } else if (destination.droppableId.startsWith("list:")) {
         const destParentId = parseListParentId(destination.droppableId);
 
+        if (!destParentId) {
+          return;
+        }
+
+        if (getRootId(destParentId) !== selectedIndex._id) {
+          return;
+        }
+
         if (
           destination.droppableId === source.droppableId &&
           destination.index === source.index &&
           (destParentId ?? null) === (sourceParentId ?? null)
         ) {
-          return;
-        }
-
-        if (destParentId && isDescendant(documents, destParentId, draggableId)) {
           return;
         }
 
@@ -538,9 +612,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
           reindexSiblings(sourceSiblings, sourceParentId);
         }
 
-        if (destParentId) {
-          ensureExpanded(destParentId);
-        }
+        ensureExpanded(destParentId);
       } else {
         return;
       }
@@ -565,7 +637,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     level: number
   ): ReactNode => {
     const siblings = sortDocuments(
-      documents.filter((doc) => (doc.parentId ?? null) === parentId)
+      documentsInIndex.filter((doc) => (doc.parentId ?? null) === parentId)
     );
 
     const visibleSiblings =
@@ -573,7 +645,11 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
         ? siblings
         : siblings.filter((doc) => doc._id && matchSet.has(doc._id));
 
-    const droppableId = parentId ? `list:${parentId}` : "list:root";
+    const droppableId = parentId
+      ? `list:${parentId}`
+      : selectedIndex?._id
+      ? `list:${selectedIndex._id}`
+      : "list:none";
 
     return (
       <DroppableAny droppableId={droppableId} type="document">
@@ -591,7 +667,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
                 document={doc}
                 index={idx}
                 level={level}
-                allDocuments={documents}
+                allDocuments={documentsInIndex}
                 favorites={favorites}
                 onToggleFavorite={toggleFavorite}
                 isExpanded={!!(doc._id && expandedIds.has(doc._id))}
@@ -620,8 +696,12 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     );
   };
 
-  const noSearchResults = matchSet !== null && matchSet.size === 0;
-  const noDocuments = documents.length === 0;
+  const noSearchResults =
+    matchSet !== null && matchSet.size === 0 && !!selectedIndex?._id;
+  const noDocuments =
+    selectedIndex?._id &&
+    documentsInIndex.filter((doc) => doc.parentId === selectedIndex._id).length ===
+      0;
 
   return (
     <DragDropContextAny onDragEnd={handleDragEnd}>
@@ -644,60 +724,128 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
             🏠 Dashboard
           </button>
 
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search pages..."
-            className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
-          />
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs font-semibold uppercase text-gray-400">
+              <span>Index</span>
+              <button
+                onClick={() => {
+                  setIsCreatingIndex(true);
+                }}
+                className="text-blue-400 transition-colors hover:text-blue-300"
+              >
+                + New
+              </button>
+            </div>
+
+            {indexes.length > 0 ? (
+              <select
+                value={selectedIndex?._id ?? ""}
+                onChange={(event) => {
+                  const nextId = event.target.value || null;
+                  setSelectedIndexId(nextId);
+                  if (nextId) {
+                    setExpandedIds(new Set());
+                  }
+                }}
+                className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+              >
+                {indexes.map((indexDoc) => (
+                  <option key={indexDoc._id} value={indexDoc._id}>
+                    {indexDoc.title || "Untitled Index"}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="rounded border border-dashed border-gray-700 px-3 py-2 text-xs text-gray-400">
+                Create an index to start organizing pages.
+              </div>
+            )}
+
+            {isCreatingIndex && (
+              <form onSubmit={handleCreateIndexSubmit} className="space-y-2">
+                <input
+                  type="text"
+                  value={newIndexTitle}
+                  onChange={(event) => setNewIndexTitle(event.target.value)}
+                  onBlur={() => {
+                    if (!newIndexTitle.trim()) {
+                      setIsCreatingIndex(false);
+                    }
+                  }}
+                  placeholder="Index title..."
+                  autoFocus
+                  className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                />
+              </form>
+            )}
+
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search pages..."
+              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+            />
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-2">
-          <div className="flex items-center justify-between px-2 py-2">
-            <span className="text-xs font-semibold uppercase text-gray-400">
-              Pages
-            </span>
-            <button
-              onClick={() => setIsCreating(true)}
-              className="flex h-5 w-5 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
-              title="Add page"
-            >
-              +
-            </button>
-          </div>
+          {selectedIndex ? (
+            <>
+              <div className="flex items-center justify-between px-2 py-2">
+                <span className="text-xs font-semibold uppercase text-gray-400">
+                  Pages in {selectedIndex.title || "Untitled Index"}
+                </span>
+                <button
+                  onClick={() => {
+                    if (!selectedIndex._id) {
+                      return;
+                    }
+                    setIsCreatingPage(true);
+                  }}
+                  className="flex h-5 w-5 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
+                  title="Add page"
+                  disabled={!selectedIndex._id}
+                >
+                  +
+                </button>
+              </div>
 
-          {isCreating && (
-            <form onSubmit={handleCreateSubmit} className="mb-2 px-2">
-              <input
-                type="text"
-                value={newDocTitle}
-                onChange={(event) => setNewDocTitle(event.target.value)}
-                onBlur={() => {
-                  if (!newDocTitle.trim()) {
-                    setIsCreating(false);
-                  }
-                }}
-                placeholder="Page title..."
-                autoFocus
-                className="w-full rounded border border-gray-700 bg-gray-800 px-2 py-1 text-sm text-white focus:border-blue-500 focus:outline-none"
-              />
-            </form>
-          )}
+              {isCreatingPage && selectedIndex._id && (
+                <form onSubmit={handleCreatePageSubmit} className="mb-2 px-2">
+                  <input
+                    type="text"
+                    value={newPageTitle}
+                    onChange={(event) => setNewPageTitle(event.target.value)}
+                    onBlur={() => {
+                      if (!newPageTitle.trim()) {
+                        setIsCreatingPage(false);
+                      }
+                    }}
+                    placeholder="Page title..."
+                    autoFocus
+                    className="w-full rounded border border-gray-700 bg-gray-800 px-2 py-1 text-sm text-white focus:border-blue-500 focus:outline-none"
+                  />
+                </form>
+              )}
 
-          {!(noSearchResults || (noDocuments && !isCreating)) && (
-            <>{renderChildren(null, 0)}</>
-          )}
+              {selectedIndex._id && renderChildren(selectedIndex._id, 0)}
 
-          {noSearchResults && !isCreating && (
+              {noSearchResults && !isCreatingPage && (
+                <div className="px-2 py-8 text-center text-sm text-gray-500">
+                  No pages found
+                </div>
+              )}
+
+              {noDocuments && !isCreatingPage && !noSearchResults && (
+                <div className="px-2 py-8 text-center text-sm text-gray-500">
+                  No pages yet. Click + to create one.
+                </div>
+              )}
+            </>
+          ) : (
             <div className="px-2 py-8 text-center text-sm text-gray-500">
-              No pages found
-            </div>
-          )}
-
-          {noDocuments && !isCreating && !noSearchResults && (
-            <div className="px-2 py-8 text-center text-sm text-gray-500">
-              No pages yet. Click + to create one.
+              Create an index to begin adding pages.
             </div>
           )}
         </div>

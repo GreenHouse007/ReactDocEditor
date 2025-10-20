@@ -215,6 +215,8 @@ const start = async () => {
         }
         case "hardBreak":
           return "<br>";
+        case "horizontalRule":
+          return "<hr />";
         default:
           return convertContent(node.content);
       }
