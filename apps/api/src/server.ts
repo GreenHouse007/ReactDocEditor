@@ -166,16 +166,53 @@ const start = async () => {
           return `<ol>${convertContent(node.content)}</ol>`;
         case "listItem":
           return `<li>${convertContent(node.content)}</li>`;
-        case "text":
-          let text = node.text || "";
-          if (node.marks) {
-            node.marks.forEach((mark: any) => {
-              if (mark.type === "bold") text = `<strong>${text}</strong>`;
-              if (mark.type === "italic") text = `<em>${text}</em>`;
-              if (mark.type === "code") text = `<code>${text}</code>`;
-            });
+        case "text": {
+          const baseText = escapeHtml(node.text || "");
+          const marks = node.marks ?? [];
+          const styleParts: string[] = [];
+          const wrappers: ((content: string) => string)[] = [];
+
+          marks.forEach((mark: any) => {
+            switch (mark.type) {
+              case "bold":
+                wrappers.push((content) => `<strong>${content}</strong>`);
+                break;
+              case "italic":
+                wrappers.push((content) => `<em>${content}</em>`);
+                break;
+              case "underline":
+                wrappers.push(
+                  (content) => `<span style="text-decoration: underline;">${content}</span>`
+                );
+                break;
+              case "code":
+                wrappers.push((content) => `<code>${content}</code>`);
+                break;
+              case "textStyle": {
+                const color = mark.attrs?.color;
+                const fontSize = mark.attrs?.fontSize;
+                if (color) {
+                  styleParts.push(`color: ${color}`);
+                }
+                if (fontSize) {
+                  styleParts.push(`font-size: ${fontSize}`);
+                }
+                break;
+              }
+              default:
+                break;
+            }
+          });
+
+          if (styleParts.length > 0) {
+            wrappers.unshift(
+              (content) =>
+                `<span style="${styleParts.join("; ")}">${content}</span>`
+            );
           }
-          return text;
+
+          return wrappers.reduce((acc, wrap) => wrap(acc), baseText);
+        }
         case "hardBreak":
           return "<br>";
         default:
@@ -198,6 +235,15 @@ const start = async () => {
     function convertContent(content: any[]): string {
       if (!content) return "";
       return content.map(convertNode).join("");
+    }
+
+    function escapeHtml(text: string): string {
+      return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
     }
 
     // Start server

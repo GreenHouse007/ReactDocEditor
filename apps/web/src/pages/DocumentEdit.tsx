@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { Editor } from "../components/Editor";
@@ -6,24 +6,20 @@ import { useState, useEffect, useRef } from "react";
 
 export function DocumentEdit() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Timers for debouncing
   const titleTimerRef = useRef<NodeJS.Timeout>();
   const contentTimerRef = useRef<NodeJS.Timeout>();
 
-  // Fetch document
   const { data: document, isLoading } = useQuery({
     queryKey: ["document", id],
     queryFn: () => api.getDocument(id!),
     enabled: !!id,
   });
 
-  // Update local state when document loads
   useEffect(() => {
     if (document) {
       setTitle(document.title);
@@ -31,7 +27,6 @@ export function DocumentEdit() {
     }
   }, [document]);
 
-  // Update mutation
   const updateMutation = useMutation({
     mutationFn: (data: { title?: string; content?: any }) =>
       api.updateDocument(id!, data),
@@ -42,39 +37,32 @@ export function DocumentEdit() {
     },
   });
 
-  // Debounced title save (3 seconds)
   const handleTitleChange = (newTitle: string) => {
     setTitle(newTitle);
     setIsSaving(true);
 
-    // Clear existing timer
     if (titleTimerRef.current) {
       clearTimeout(titleTimerRef.current);
     }
 
-    // Set new timer
     titleTimerRef.current = setTimeout(() => {
       updateMutation.mutate({ title: newTitle });
     }, 3000);
   };
 
-  // Debounced content save (3 seconds)
   const handleContentChange = (newContent: any) => {
     setContent(newContent);
     setIsSaving(true);
 
-    // Clear existing timer
     if (contentTimerRef.current) {
       clearTimeout(contentTimerRef.current);
     }
 
-    // Set new timer
     contentTimerRef.current = setTimeout(() => {
       updateMutation.mutate({ content: newContent });
     }, 3000);
   };
 
-  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (titleTimerRef.current) clearTimeout(titleTimerRef.current);
@@ -84,7 +72,7 @@ export function DocumentEdit() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+      <div className="flex h-full items-center justify-center bg-gray-900 text-white">
         <p>Loading...</p>
       </div>
     );
@@ -92,7 +80,7 @@ export function DocumentEdit() {
 
   if (!document) {
     return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+      <div className="flex h-full items-center justify-center bg-gray-900 text-white">
         <p>Document not found</p>
       </div>
     );
@@ -102,16 +90,14 @@ export function DocumentEdit() {
     if (!document) return;
 
     try {
-      const blob = await api.exportPDF(title, content, document.icon);
-
-      // Create download link
+      const blob = await api.exportPDF(title, content);
       const url = window.URL.createObjectURL(blob);
-      const a = window.document.createElement("a");
-      a.href = url;
-      a.download = `${title || "document"}.pdf`;
-      window.document.body.appendChild(a);
-      a.click();
-      window.document.body.removeChild(a);
+      const anchor = window.document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${title || "document"}.pdf`;
+      window.document.body.appendChild(anchor);
+      anchor.click();
+      window.document.body.removeChild(anchor);
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error("PDF export failed:", error);
@@ -119,43 +105,40 @@ export function DocumentEdit() {
     }
   };
 
+  const saveStatus =
+    isSaving || updateMutation.isPending ? "Saving..." : "All changes saved";
+
   return (
-    <div className="min-h-screen bg-gray-900 text-white">
-      {/* Save indicator and Export */}
-      <div className="absolute top-4 right-8 flex items-center gap-4">
-        <button
-          onClick={handleExportPDF}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition-colors"
-        >
-          📄 Export PDF
-        </button>
-        <div className="text-sm text-gray-400">
-          {isSaving
-            ? "Saving..."
-            : updateMutation.isPending
-            ? "Saving..."
-            : "All changes saved"}
+    <div className="flex h-full min-h-full flex-col bg-gray-900 text-white">
+      <header className="flex flex-wrap items-center gap-4 border-b border-gray-800 px-10 py-6">
+        <div className="min-w-[240px] flex-1">
+          <input
+            type="text"
+            value={title}
+            onChange={(event) => handleTitleChange(event.target.value)}
+            placeholder="Untitled"
+            className="w-full bg-transparent text-4xl font-bold text-white placeholder:text-gray-600 focus:outline-none"
+          />
         </div>
-      </div>
+        <div className="flex items-center gap-4 text-sm text-gray-400">
+          <div>{saveStatus}</div>
+          <button
+            onClick={handleExportPDF}
+            className="rounded bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-500"
+          >
+            Export PDF
+          </button>
+        </div>
+      </header>
 
-      {/* Title */}
-      <div className="max-w-4xl mx-auto px-8 pt-16">
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => handleTitleChange(e.target.value)}
-          placeholder="Untitled"
-          className="w-full text-5xl font-bold bg-transparent border-none focus:outline-none mb-4"
-        />
-      </div>
-
-      {/* Editor */}
-      <div className="max-w-4xl mx-auto px-8 pb-16">
-        <Editor
-          content={content}
-          onChange={handleContentChange}
-          placeholder="Start writing your world..."
-        />
+      <div className="flex-1 overflow-y-auto px-10 py-8">
+        <div className="mx-auto w-full max-w-6xl">
+          <Editor
+            content={content}
+            onChange={handleContentChange}
+            placeholder="Start writing your world..."
+          />
+        </div>
       </div>
     </div>
   );
