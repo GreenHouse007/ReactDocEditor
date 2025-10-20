@@ -73,12 +73,12 @@ const start = async () => {
 
         // Generate PDF
         const pdf = await page.pdf({
-          format: "A4",
+          format: "Letter",
           margin: {
-            top: "20mm",
-            right: "20mm",
-            bottom: "20mm",
-            left: "20mm",
+            top: "1in",
+            right: "1in",
+            bottom: "1in",
+            left: "1in",
           },
           printBackground: true,
         });
@@ -110,18 +110,15 @@ const start = async () => {
             ? rawContent.content
             : [];
           const sectionBody = convertContent(nodes);
-          const headingLevel = 1;
-          const heading = `<h${headingLevel}>${escapeHtml(
-            doc.title || "Untitled"
-          )}</h${headingLevel}>`;
+          const heading = `<h1>${escapeHtml(doc.title || "Untitled")}</h1>`;
           const pageBreak =
             index < documents.length - 1 ? '<div class="page-break"></div>' : "";
 
           return `
-            <article class="document-section">
+            <section class="document-block">
               ${heading}
               ${sectionBody}
-            </article>
+            </section>
             ${pageBreak}
           `;
         })
@@ -133,57 +130,88 @@ const start = async () => {
         <head>
           <meta charset="UTF-8">
           <style>
+            @page {
+              size: Letter;
+              margin: 1in;
+            }
             body {
-              font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              line-height: 1.7;
-              color: #111827;
               margin: 0;
-              padding: 48px;
-              background: #ffffff;
+              font-family: 'Times New Roman', Georgia, serif;
+              color: #1f2933;
+              font-size: 12pt;
+              line-height: 1.6;
+            }
+            .document-block {
+              margin-bottom: 2em;
+              page-break-inside: avoid;
             }
             h1, h2, h3, h4, h5, h6 {
-              font-weight: 600;
-              color: #0f172a;
-              margin-top: 1.6em;
-              margin-bottom: 0.6em;
+              font-family: 'Georgia', 'Times New Roman', serif;
+              color: #1a202c;
+              margin: 1.4em 0 0.6em;
+              line-height: 1.3;
             }
-            h1 { font-size: 2.4rem; }
-            h2 { font-size: 2rem; }
-            h3 { font-size: 1.6rem; }
-            p { margin: 1em 0; font-size: 1rem; }
-            ul, ol { margin: 1em 0; padding-left: 1.6em; }
-            li { margin: 0.4em 0; }
-            strong { font-weight: 600; }
-            em { font-style: italic; }
+            h1:first-child {
+              margin-top: 0;
+            }
+            h1 { font-size: 24pt; }
+            h2 { font-size: 20pt; }
+            h3 { font-size: 16pt; }
+            p {
+              margin: 0 0 1em;
+            }
+            ul, ol {
+              margin: 0 0 1em 1.4em;
+            }
+            li {
+              margin: 0.25em 0;
+            }
+            strong {
+              font-weight: 700;
+            }
+            em {
+              font-style: italic;
+            }
             code {
-              background: #f1f5f9;
-              padding: 2px 6px;
-              border-radius: 4px;
-              font-family: 'Source Code Pro', 'Courier New', monospace;
+              background: #f3f4f6;
+              padding: 0 0.35em;
+              border-radius: 3px;
+              font-family: 'Courier New', Courier, monospace;
+              font-size: 11pt;
             }
             pre {
-              background: #0f172a;
-              color: #e2e8f0;
-              padding: 16px;
-              border-radius: 8px;
+              background: #f3f4f6;
+              border-radius: 4px;
+              padding: 0.8em;
               overflow: auto;
-              font-family: 'Source Code Pro', 'Courier New', monospace;
+              font-family: 'Courier New', Courier, monospace;
+              font-size: 11pt;
+              margin: 0 0 1.2em;
             }
             blockquote {
-              border-left: 4px solid #93c5fd;
-              padding-left: 16px;
-              margin: 1.5em 0;
-              color: #475569;
+              border-left: 3px solid #cbd5e0;
+              margin: 1em 0;
+              padding: 0.4em 1em;
+              color: #4a5568;
               font-style: italic;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              margin: 1em 0;
+              font-size: 11pt;
+            }
+            th, td {
+              border: 1px solid #cbd5e0;
+              padding: 0.4em 0.6em;
+            }
+            hr {
+              border: none;
+              border-top: 1px solid #cbd5e0;
+              margin: 2em 0;
             }
             .page-break {
               page-break-after: always;
-              margin: 48px 0;
-              height: 1px;
-            }
-            .document-section {
-              max-width: 740px;
-              margin: 0 auto;
             }
           </style>
         </head>
@@ -207,6 +235,20 @@ const start = async () => {
           return `<ol>${convertContent(node.content)}</ol>`;
         case "listItem":
           return `<li>${convertContent(node.content)}</li>`;
+        case "blockquote":
+          return `<blockquote>${convertContent(node.content)}</blockquote>`;
+        case "codeBlock":
+          return `<pre>${convertContent(node.content)}</pre>`;
+        case "horizontalRule":
+          return "<hr />";
+        case "table":
+          return `<table>${convertContent(node.content)}</table>`;
+        case "tableRow":
+          return `<tr>${convertContent(node.content)}</tr>`;
+        case "tableHeader":
+          return `<th>${convertContent(node.content)}</th>`;
+        case "tableCell":
+          return `<td>${convertContent(node.content)}</td>`;
         case "text":
           let text = escapeHtml(node.text || "");
           if (node.marks) {
