@@ -5,7 +5,12 @@ import { useNavigate, useParams } from "react-router-dom";
 import type { Document, UpdateDocumentDto } from "@enfield/types";
 import { IconPicker } from "./IconPicker";
 import { PageOptionsMenu } from "./PageOptionsMenu";
-import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
+import {
+  DragDropContext,
+  Droppable,
+  Draggable,
+  type DropResult,
+} from "@hello-pangea/dnd";
 
 // Workaround for type conflicts between multiple @types/react versions in the monorepo.
 // Cast the DnD components to `any` so they can be used in JSX without TypeScript errors.
@@ -328,11 +333,17 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     },
   });
 
-  const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: UpdateDocumentDto }) =>
-      api.updateDocument(id, data),
+  const reorderMutation = useMutation({
+    mutationFn: async (updates: { id: string; data: UpdateDocumentDto }[]) => {
+      await Promise.all(
+        updates.map(({ id, data }) => api.updateDocument(id, data))
+      );
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
+    },
+    onError: (error) => {
+      console.error("Failed to reorder documents:", error);
     },
   });
 
@@ -343,103 +354,115 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     }
   };
 
-  const handleDragEnd = (result: any) => {
+  const handleDragEnd = async (result: DropResult) => {
     const { destination, source, draggableId } = result;
 
-    console.log("Drag ended:", { destination, source, draggableId });
-
     if (!destination) {
-      console.log("No destination - dropped outside");
       return;
     }
-
-    if (
-      destination.droppableId === source.droppableId &&
-      destination.index === source.index
-    ) {
-      console.log("No movement detected");
-      return;
-    }
-
-    let destParentId: string | null = null;
-
-    // Check if dropped onto a document (nest operation)
-    if (destination.droppableId.startsWith("nest-")) {
-      destParentId = destination.droppableId.replace("nest-", "");
-      console.log("Nesting document under:", destParentId);
-
-      // Make it a child and set order to 0 (first child)
-      updateMutation.mutate({
-        id: draggableId,
-        data: {
-          parentId: destParentId,
-          order: 0,
-        },
-      });
-      return;
-    }
-
-    // Normal drop in a list
-    destParentId =
-      destination.droppableId === "root"
-        ? null
-        : destination.droppableId.replace("children-", "");
 
     const sourceParentId =
       source.droppableId === "root"
         ? null
         : source.droppableId.replace("children-", "");
 
-    console.log("Moving document:", {
-      documentId: draggableId,
-      fromParent: sourceParentId,
-      toParent: destParentId,
-      newIndex: destination.index,
-    });
+    const isNestDrop = destination.droppableId.startsWith("nest-");
+    let destParentId: string | null;
+    let destIndex = destination.index;
 
-    const newOrder = destination.index;
+    if (isNestDrop) {
+      destParentId = destination.droppableId.replace("nest-", "");
 
-    // Update the dragged document
-    updateMutation.mutate({
-      id: draggableId,
-      data: {
-        parentId: destParentId,
-        order: newOrder,
-      },
-    });
-
-    // Adjust orders for sibling documents
-    const destParentIdStr = destParentId;
-    const sourceParentIdStr = sourceParentId;
-
-    const siblings = sortDocuments(
-      documents.filter((d) => (d.parentId ?? null) === destParentIdStr)
-    );
-
-    siblings.forEach((doc, idx) => {
-      if (doc._id === draggableId) return;
-
-      let adjustedIdx = idx;
-
-      if (destParentIdStr === sourceParentIdStr) {
-        if (source.index < destination.index) {
-          if (idx > source.index && idx <= destination.index) {
-            adjustedIdx = idx - 1;
-          }
-        } else if (source.index > destination.index) {
-          if (idx >= destination.index && idx < source.index) {
-            adjustedIdx = idx + 1;
-          }
-        }
+      // Prevent dropping a document into itself
+      if (destParentId === draggableId) {
+        return;
       }
 
-      if (adjustedIdx >= newOrder) {
-        updateMutation.mutate({
-          id: doc._id!,
-          data: { order: adjustedIdx + 1 },
+      const existingChildren = sortDocuments(
+        documents.filter((doc) => (doc.parentId ?? null) === destParentId)
+      ).filter((doc) => doc._id !== draggableId);
+
+      destIndex = existingChildren.length;
+    } else {
+      destParentId =
+        destination.droppableId === "root"
+          ? null
+          : destination.droppableId.replace("children-", "");
+
+      if (
+        destination.droppableId === source.droppableId &&
+        destination.index === source.index
+      ) {
+        return;
+      }
+    }
+
+    const movingDoc = documents.find((doc) => doc._id === draggableId);
+    if (!movingDoc) {
+      return;
+    }
+
+    const updates: { id: string; data: UpdateDocumentDto }[] = [];
+
+    try {
+      if (!isNestDrop && sourceParentId === destParentId) {
+        const siblings = sortDocuments(
+          documents.filter((doc) => (doc.parentId ?? null) === destParentId)
+        );
+
+        const reordered = siblings
+          .filter((doc) => doc._id !== draggableId)
+          .slice();
+
+        reordered.splice(destination.index, 0, { ...movingDoc });
+
+        reordered.forEach((doc, idx) => {
+          if (doc.order === idx) return;
+
+          updates.push({
+            id: doc._id!,
+            data: { order: idx },
+          });
+        });
+      } else {
+        const sourceSiblings = sortDocuments(
+          documents.filter((doc) => (doc.parentId ?? null) === sourceParentId)
+        ).filter((doc) => doc._id !== draggableId);
+
+        sourceSiblings.forEach((doc, idx) => {
+          if (doc.order === idx) return;
+          updates.push({ id: doc._id!, data: { order: idx } });
+        });
+
+        const destSiblings = sortDocuments(
+          documents.filter((doc) => (doc.parentId ?? null) === destParentId)
+        ).filter((doc) => doc._id !== draggableId);
+
+        destSiblings.splice(destIndex, 0, {
+          ...movingDoc,
+          parentId: destParentId ?? null,
+        });
+
+        destSiblings.forEach((doc, idx) => {
+          const data: UpdateDocumentDto = { order: idx };
+          if (doc._id === draggableId) {
+            data.parentId = destParentId;
+          }
+
+          if (doc.order !== idx || doc._id === draggableId) {
+            updates.push({ id: doc._id!, data });
+          }
         });
       }
-    });
+
+      if (updates.length === 0) {
+        return;
+      }
+
+      await reorderMutation.mutateAsync(updates);
+    } catch (error) {
+      console.error("Failed to handle drag and drop:", error);
+    }
   };
 
   const toggleFavorite = (id: string) => {

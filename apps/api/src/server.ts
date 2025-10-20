@@ -34,14 +34,15 @@ const start = async () => {
     fastify.post<{
       Body: { title: string; content: any; icon?: string };
     }>("/api/export-pdf", async (request, reply) => {
+      let browser: puppeteer.Browser | null = null;
+
       try {
         const { title, content, icon } = request.body;
 
         // Generate HTML from Tiptap JSON
         const html = generateHTMLFromTiptap(title, content, icon);
 
-        // Launch Puppeteer
-        const browser = await puppeteer.launch({
+        browser = await puppeteer.launch({
           headless: true,
           args: ["--no-sandbox", "--disable-setuid-sandbox"],
         });
@@ -49,7 +50,6 @@ const start = async () => {
         const page = await browser.newPage();
         await page.setContent(html, { waitUntil: "networkidle0" });
 
-        // Generate PDF
         const pdf = await page.pdf({
           format: "A4",
           margin: {
@@ -61,9 +61,6 @@ const start = async () => {
           printBackground: true,
         });
 
-        await browser.close();
-
-        // Send PDF
         reply.type("application/pdf");
         reply.header(
           "Content-Disposition",
@@ -71,8 +68,12 @@ const start = async () => {
         );
         return reply.send(pdf);
       } catch (error) {
-        fastify.log.error(error);
+        fastify.log.error({ err: error }, "Failed to generate PDF");
         reply.status(500).send({ error: "Failed to generate PDF" });
+      } finally {
+        if (browser) {
+          await browser.close();
+        }
       }
     });
 

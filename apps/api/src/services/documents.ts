@@ -14,13 +14,27 @@ export async function createDocument(
   const db = getDatabase();
   const now = new Date();
 
+  const parentId = data.parentId ?? null;
+
+  // Determine the next order for the new document within its parent scope
+  const [lastSibling] = await db
+    .collection(COLLECTION)
+    .find({ parentId })
+    .sort({ order: -1 })
+    .limit(1)
+    .toArray();
+
+  const nextOrder =
+    data.order ??
+    (typeof lastSibling?.order === "number" ? lastSibling.order + 1 : 0);
+
   const document = {
     title: data.title,
     content: data.content || { type: "doc", content: [] },
     authorId: data.authorId,
-    parentId: data.parentId || null,
+    parentId,
     icon: data.icon || "📄",
-    order: data.order ?? 0, // ADD THIS
+    order: nextOrder,
     createdAt: now,
     updatedAt: now,
   };
@@ -86,28 +100,27 @@ export async function updateDocument(
   if (data.content !== undefined) updateFields.content = data.content;
   if (data.parentId !== undefined) updateFields.parentId = data.parentId;
   if (data.icon !== undefined) updateFields.icon = data.icon;
-  if (data.order !== undefined) updateFields.order = data.order; // ADD THIS
+  if (data.order !== undefined) updateFields.order = data.order;
 
-  const result = await db
-    .collection(COLLECTION)
-    .findOneAndUpdate(
-      { _id: new ObjectId(id) },
-      { $set: updateFields },
-      { returnDocument: "after" }
-    );
+  const result = await db.collection(COLLECTION).findOneAndUpdate(
+    { _id: new ObjectId(id) },
+    { $set: updateFields },
+    { returnDocument: "after" }
+  );
 
-  if (!result) return null;
+  const value = result.value;
+  if (!value) return null;
 
   return {
-    _id: result._id.toString(),
-    title: result.title,
-    content: result.content,
-    authorId: result.authorId,
-    parentId: result.parentId || null,
-    icon: result.icon || "📄",
-    order: result.order ?? 0, // ADD THIS
-    createdAt: result.createdAt,
-    updatedAt: result.updatedAt,
+    _id: value._id.toString(),
+    title: value.title,
+    content: value.content,
+    authorId: value.authorId,
+    parentId: value.parentId || null,
+    icon: value.icon || "📄",
+    order: value.order ?? 0,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
   };
 }
 
