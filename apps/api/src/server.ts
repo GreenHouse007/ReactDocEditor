@@ -35,6 +35,7 @@ const start = async () => {
       Body: { title: string; content: any; icon?: string };
     }>("/api/export-pdf", async (request, reply) => {
       let browser: puppeteer.Browser | null = null;
+      let page: puppeteer.Page | null = null;
 
       try {
         const { title, content, icon } = request.body;
@@ -47,7 +48,7 @@ const start = async () => {
           args: ["--no-sandbox", "--disable-setuid-sandbox"],
         });
 
-        const page = await browser.newPage();
+        page = await browser.newPage();
         await page.setContent(html, { waitUntil: "networkidle0" });
 
         const pdf = await page.pdf({
@@ -61,16 +62,30 @@ const start = async () => {
           printBackground: true,
         });
 
-        reply.type("application/pdf");
-        reply.header(
-          "Content-Disposition",
-          `attachment; filename="${title || "document"}.pdf"`
-        );
-        return reply.send(pdf);
+        const filename = createSafeFilename(title);
+
+        return reply
+          .type("application/pdf")
+          .header("Content-Disposition", `attachment; filename="${filename}"`)
+          .send(pdf);
       } catch (error) {
         fastify.log.error({ err: error }, "Failed to generate PDF");
-        reply.status(500).send({ error: "Failed to generate PDF" });
+
+        if (!reply.sent) {
+          reply
+            .status(500)
+            .type("application/json")
+            .send({ error: "Failed to generate PDF" });
+        }
       } finally {
+        if (page) {
+          try {
+            await page.close();
+          } catch (closeError) {
+            fastify.log.error({ err: closeError }, "Failed to close page");
+          }
+        }
+
         if (browser) {
           await browser.close();
         }
@@ -166,6 +181,18 @@ const start = async () => {
         default:
           return convertContent(node.content);
       }
+    }
+
+    function createSafeFilename(title?: string): string {
+      const fallback = "document";
+      const sanitizedBase = (title ?? fallback)
+        .replace(/[\r\n]+/g, " ")
+        .replace(/[^\w\s.-]+/g, "")
+        .trim()
+        .replace(/\s+/g, "_");
+
+      const base = sanitizedBase || fallback;
+      return base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
     }
 
     function convertContent(content: any[]): string {

@@ -27,6 +27,32 @@ function sortDocuments(docs: Document[]): Document[] {
   });
 }
 
+function isDescendant(
+  docs: Document[],
+  potentialDescendantId: string | null | undefined,
+  potentialAncestorId: string
+): boolean {
+  if (!potentialDescendantId) {
+    return false;
+  }
+
+  let current = docs.find((doc) => doc._id === potentialDescendantId) ?? null;
+
+  while (current) {
+    if (current.parentId === potentialAncestorId) {
+      return true;
+    }
+
+    if (!current.parentId) {
+      return false;
+    }
+
+    current = docs.find((doc) => doc._id === current?.parentId) ?? null;
+  }
+
+  return false;
+}
+
 interface SidebarItemProps {
   document: Document;
   level: number;
@@ -276,6 +302,7 @@ function SidebarItem({
             <DroppableAny
               droppableId={`children-${document._id}`}
               type="document"
+              isCombineEnabled={true}
             >
               {(provided: any) => (
                 <div ref={provided.innerRef} {...provided.droppableProps}>
@@ -355,46 +382,10 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   };
 
   const handleDragEnd = async (result: DropResult) => {
-    const { destination, source, draggableId } = result;
+    const { destination, source, draggableId, combine } = result;
 
-    if (!destination) {
+    if (!destination && !combine) {
       return;
-    }
-
-    const sourceParentId =
-      source.droppableId === "root"
-        ? null
-        : source.droppableId.replace("children-", "");
-
-    const isNestDrop = destination.droppableId.startsWith("nest-");
-    let destParentId: string | null;
-    let destIndex = destination.index;
-
-    if (isNestDrop) {
-      destParentId = destination.droppableId.replace("nest-", "");
-
-      // Prevent dropping a document into itself
-      if (destParentId === draggableId) {
-        return;
-      }
-
-      const existingChildren = sortDocuments(
-        documents.filter((doc) => (doc.parentId ?? null) === destParentId)
-      ).filter((doc) => doc._id !== draggableId);
-
-      destIndex = existingChildren.length;
-    } else {
-      destParentId =
-        destination.droppableId === "root"
-          ? null
-          : destination.droppableId.replace("children-", "");
-
-      if (
-        destination.droppableId === source.droppableId &&
-        destination.index === source.index
-      ) {
-        return;
-      }
     }
 
     const movingDoc = documents.find((doc) => doc._id === draggableId);
@@ -402,58 +393,136 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       return;
     }
 
-    const updates: { id: string; data: UpdateDocumentDto }[] = [];
+    const updatesMap = new Map<string, UpdateDocumentDto>();
+
+    const queueUpdate = (id: string, data: UpdateDocumentDto) => {
+      if (!id) return;
+      const existing = updatesMap.get(id) ?? {};
+      updatesMap.set(id, { ...existing, ...data });
+    };
+
+    const getSiblings = (parentId: string | null) =>
+      sortDocuments(
+        documents.filter((doc) => (doc.parentId ?? null) === parentId)
+      );
+
+    const reindexSiblings = (
+      siblings: Document[],
+      parentId: string | null
+    ) => {
+      siblings.forEach((doc, idx) => {
+        if (!doc._id) {
+          return;
+        }
+
+        const data: UpdateDocumentDto = {};
+
+        if (doc._id === draggableId) {
+          data.parentId = parentId;
+          data.order = idx;
+        } else if (doc.order !== idx) {
+          data.order = idx;
+        }
+
+        if (Object.keys(data).length > 0) {
+          queueUpdate(doc._id, data);
+        }
+      });
+    };
+
+    const sourceParentId = movingDoc.parentId ?? null;
 
     try {
-      if (!isNestDrop && sourceParentId === destParentId) {
-        const siblings = sortDocuments(
-          documents.filter((doc) => (doc.parentId ?? null) === destParentId)
+      if (combine) {
+        const targetId = combine.draggableId;
+
+        if (!targetId || targetId === draggableId) {
+          return;
+        }
+
+        if (isDescendant(documents, targetId, draggableId)) {
+          return;
+        }
+
+        const destParentId = targetId;
+
+        const destSiblings = getSiblings(destParentId).filter(
+          (doc) => doc._id !== draggableId
         );
+        destSiblings.push({ ...movingDoc, parentId: destParentId });
 
-        const reordered = siblings
-          .filter((doc) => doc._id !== draggableId)
-          .slice();
+        reindexSiblings(destSiblings, destParentId);
 
-        reordered.splice(destination.index, 0, { ...movingDoc });
+        if (sourceParentId !== destParentId) {
+          const sourceSiblings = getSiblings(sourceParentId).filter(
+            (doc) => doc._id !== draggableId
+          );
+          reindexSiblings(sourceSiblings, sourceParentId);
+        }
+      } else if (destination) {
+        const isNestDrop = destination.droppableId.startsWith("nest-");
 
-        reordered.forEach((doc, idx) => {
-          if (doc.order === idx) return;
+        if (isNestDrop) {
+          const destParentId = destination.droppableId.replace("nest-", "");
 
-          updates.push({
-            id: doc._id!,
-            data: { order: idx },
+          if (
+            destParentId === draggableId ||
+            isDescendant(documents, destParentId, draggableId)
+          ) {
+            return;
+          }
+
+          const destSiblings = getSiblings(destParentId).filter(
+            (doc) => doc._id !== draggableId
+          );
+
+          destSiblings.push({ ...movingDoc, parentId: destParentId });
+
+          reindexSiblings(destSiblings, destParentId);
+
+          if (sourceParentId !== destParentId) {
+            const sourceSiblings = getSiblings(sourceParentId).filter(
+              (doc) => doc._id !== draggableId
+            );
+            reindexSiblings(sourceSiblings, sourceParentId);
+          }
+        } else {
+          const destParentId =
+            destination.droppableId === "root"
+              ? null
+              : destination.droppableId.replace("children-", "");
+
+          if (
+            destination.droppableId === source.droppableId &&
+            destination.index === source.index
+          ) {
+            return;
+          }
+
+          const destSiblings = getSiblings(destParentId).filter(
+            (doc) => doc._id !== draggableId
+          );
+
+          destSiblings.splice(destination.index, 0, {
+            ...movingDoc,
+            parentId: destParentId,
           });
-        });
-      } else {
-        const sourceSiblings = sortDocuments(
-          documents.filter((doc) => (doc.parentId ?? null) === sourceParentId)
-        ).filter((doc) => doc._id !== draggableId);
 
-        sourceSiblings.forEach((doc, idx) => {
-          if (doc.order === idx) return;
-          updates.push({ id: doc._id!, data: { order: idx } });
-        });
+          reindexSiblings(destSiblings, destParentId);
 
-        const destSiblings = sortDocuments(
-          documents.filter((doc) => (doc.parentId ?? null) === destParentId)
-        ).filter((doc) => doc._id !== draggableId);
-
-        destSiblings.splice(destIndex, 0, {
-          ...movingDoc,
-          parentId: destParentId ?? null,
-        });
-
-        destSiblings.forEach((doc, idx) => {
-          const data: UpdateDocumentDto = { order: idx };
-          if (doc._id === draggableId) {
-            data.parentId = destParentId;
+          if (destParentId !== sourceParentId) {
+            const sourceSiblings = getSiblings(sourceParentId).filter(
+              (doc) => doc._id !== draggableId
+            );
+            reindexSiblings(sourceSiblings, sourceParentId);
           }
-
-          if (doc.order !== idx || doc._id === draggableId) {
-            updates.push({ id: doc._id!, data });
-          }
-        });
+        }
       }
+
+      const updates = Array.from(updatesMap.entries()).map(([id, data]) => ({
+        id,
+        data,
+      }));
 
       if (updates.length === 0) {
         return;
@@ -544,7 +613,11 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
             </form>
           )}
 
-          <DroppableAny droppableId="root" type="document">
+          <DroppableAny
+            droppableId="root"
+            type="document"
+            isCombineEnabled={true}
+          >
             {(provided: any) => (
               <div
                 ref={provided.innerRef}
