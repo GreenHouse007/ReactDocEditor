@@ -1,14 +1,16 @@
 import { useEffect, useRef } from "react";
 
 interface PageOptionsMenuProps {
-  onAddChild: () => void;
+  onRename: () => void;
+  onMove: () => void;
   onDelete: () => void;
   onClose: () => void;
   triggerRef: HTMLButtonElement | null;
 }
 
 export function PageOptionsMenu({
-  onAddChild,
+  onRename,
+  onMove,
   onDelete,
   onClose,
   triggerRef,
@@ -31,16 +33,25 @@ export function PageOptionsMenu({
       {/* Menu - Fixed position, not relative */}
       <div
         ref={menuRef}
-        className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-48"
+        className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 w-44"
       >
         <button
           onClick={() => {
-            onAddChild();
+            onRename();
             onClose();
           }}
-          className="w-full px-4 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2"
+          className="w-full px-4 py-2 text-left text-sm text-gray-200 hover:bg-gray-700"
         >
-          <span>➕</span> Add Child Page
+          Rename
+        </button>
+        <button
+          onClick={() => {
+            onMove();
+            onClose();
+          }}
+          className="w-full px-4 py-2 text-left text-sm text-gray-200 hover:bg-gray-700"
+        >
+          Move
         </button>
         <div className="border-t border-gray-700 my-1" />
         <button
@@ -48,9 +59,9 @@ export function PageOptionsMenu({
             onDelete();
             onClose();
           }}
-          className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-gray-700 flex items-center gap-2"
+          className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-gray-700"
         >
-          <span>🗑️</span> Delete
+          Delete
         </button>
       </div>
     </>

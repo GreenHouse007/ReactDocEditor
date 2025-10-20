@@ -1,11 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Document, UpdateDocumentDto } from "@enfield/types";
-import { IconPicker } from "./IconPicker";
 import { PageOptionsMenu } from "./PageOptionsMenu";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
+import { MoveDocumentModal } from "./MoveDocumentModal";
+import { sortDocuments } from "../lib/documentTree";
 
 // Workaround for type conflicts between multiple @types/react versions in the monorepo.
 // Cast the DnD components to `any` so they can be used in JSX without TypeScript errors.
@@ -13,22 +14,12 @@ const DragDropContextAny = DragDropContext as any;
 const DroppableAny = Droppable as any;
 const DraggableAny = Draggable as any;
 
-// Helper function to sort documents by order
-function sortDocuments(docs: Document[]): Document[] {
-  return [...docs].sort((a, b) => {
-    const orderA = a.order ?? 999999;
-    const orderB = b.order ?? 999999;
-    return orderA - orderB;
-  });
-}
-
 interface SidebarItemProps {
   document: Document;
   level: number;
   allDocuments: Document[];
   index: number;
-  favorites: string[];
-  onToggleFavorite: (id: string) => void;
+  onRequestMove: (document: Document) => void;
 }
 
 function SidebarItem({
@@ -36,40 +27,44 @@ function SidebarItem({
   level,
   allDocuments,
   index,
-  favorites,
-  onToggleFavorite,
+  onRequestMove,
 }: SidebarItemProps) {
   const navigate = useNavigate();
   const { id: currentId } = useParams();
   const queryClient = useQueryClient();
   const [isExpanded, setIsExpanded] = useState(true);
-  const [isHovered, setIsHovered] = useState(false);
-  const [showIconPicker, setShowIconPicker] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
-  const [isCreatingChild, setIsCreatingChild] = useState(false);
-  const [childTitle, setChildTitle] = useState("");
-  const iconButtonRef = useRef<HTMLButtonElement>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(document.title || "");
   const optionsButtonRef = useRef<HTMLButtonElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   const children = sortDocuments(
     allDocuments.filter((doc) => doc.parentId === document._id)
   );
   const hasChildren = children.length > 0;
   const isActive = currentId === document._id;
-  const isFavorite = favorites.includes(document._id || "");
+  useEffect(() => {
+    if (!isRenaming) {
+      setRenameValue(document.title || "");
+    }
+  }, [document.title, isRenaming]);
 
-  const updateIconMutation = useMutation({
-    mutationFn: (icon: string) => {
-      console.log("Updating icon to:", icon, "for document:", document._id);
-      return api.updateDocument(document._id!, { icon });
-    },
+  useEffect(() => {
+    if (isRenaming && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [isRenaming]);
+
+  const renameMutation = useMutation({
+    mutationFn: (title: string) =>
+      api.updateDocument(document._id!, {
+        title,
+      }),
     onSuccess: () => {
-      console.log("Icon update successful");
       queryClient.invalidateQueries({ queryKey: ["documents"] });
       queryClient.invalidateQueries({ queryKey: ["document", document._id] });
-    },
-    onError: (error) => {
-      console.error("Icon update failed:", error);
     },
   });
 
@@ -83,28 +78,35 @@ function SidebarItem({
     },
   });
 
-  const createChildMutation = useMutation({
-    mutationFn: (title: string) =>
-      api.createDocument({
-        title,
-        authorId: "demo-user",
-        parentId: document._id,
-        icon: "📄",
-      }),
-    onSuccess: (newDoc) => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      setIsCreatingChild(false);
-      setChildTitle("");
-      setIsExpanded(true);
-      navigate(`/document/${newDoc._id}`);
-    },
-  });
-
-  const handleCreateChild = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (childTitle.trim()) {
-      createChildMutation.mutate(childTitle);
+  const handleRenameSubmit = (e?: React.FormEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
     }
+
+    const nextTitle = renameValue.trim();
+
+    if (!nextTitle) {
+      setRenameValue(document.title || "");
+      setIsRenaming(false);
+      return;
+    }
+
+    if (nextTitle === (document.title || "")) {
+      setIsRenaming(false);
+      return;
+    }
+
+    renameMutation.mutate(nextTitle, {
+      onSuccess: () => {
+        setIsRenaming(false);
+      },
+    });
+  };
+
+  const handleRenameCancel = () => {
+    setRenameValue(document.title || "");
+    setIsRenaming(false);
   };
 
   return (
@@ -134,102 +136,83 @@ function SidebarItem({
               `}
               >
                 <div
-                  className={`
-                  relative flex items-center gap-1 px-2 py-1 rounded cursor-pointer group
-                  hover:bg-gray-800/50 transition-colors
-                  ${isActive ? "bg-gray-800" : ""}
+                  className={`relative flex items-center rounded px-2 py-1 pr-9 transition-colors group cursor-pointer
+                  ${isActive ? "bg-gray-800" : "hover:bg-gray-800/50"}
                 `}
-                  style={{ paddingLeft: `${level * 12 + 8}px` }}
-                  onMouseEnter={() => setIsHovered(true)}
-                  onMouseLeave={() => setIsHovered(false)}
-                  onClick={() => navigate(`/document/${document._id}`)}
+                  style={{ paddingLeft: `${level * 16 + 12}px` }}
+                  onClick={() => {
+                    if (!isRenaming) {
+                      navigate(`/document/${document._id}`);
+                    }
+                  }}
                 >
-                  {/* Drag handle */}
-                  <div {...provided.dragHandleProps} className="flex-shrink-0">
-                    <div className="w-4 h-4 flex items-center justify-center text-gray-600 hover:text-gray-400 opacity-0 group-hover:opacity-100">
-                      ⋮⋮
-                    </div>
+                  <div
+                    {...provided.dragHandleProps}
+                    onClick={(e: React.MouseEvent) => e.stopPropagation()}
+                    className="mr-2 flex h-5 w-5 items-center justify-center select-none text-xs text-gray-600 group-hover:text-gray-400"
+                    aria-label="Drag handle"
+                  >
+                    ⋮⋮
                   </div>
 
-                  {/* Expand/collapse arrow */}
                   {hasChildren ? (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        setIsExpanded(!isExpanded);
+                        setIsExpanded((prev) => !prev);
                       }}
-                      className="w-4 h-4 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                      className="mr-2 flex h-5 w-5 items-center justify-center rounded text-xs text-gray-400 hover:bg-gray-700"
+                      aria-label={isExpanded ? "Collapse" : "Expand"}
                     >
-                      <span className="text-xs text-gray-400">
-                        {isExpanded ? "▼" : "▶"}
-                      </span>
+                      {isExpanded ? "▾" : "▸"}
                     </button>
                   ) : (
-                    <div className="w-4 flex-shrink-0" />
+                    <div className="mr-2 w-5" />
                   )}
 
-                  {/* Icon */}
+                  {isRenaming ? (
+                    <form
+                      onSubmit={handleRenameSubmit}
+                      className="flex-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        ref={renameInputRef}
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={handleRenameSubmit}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleRenameCancel();
+                          }
+                        }}
+                        className="w-full rounded border border-gray-600 bg-gray-900 px-2 py-1 text-sm text-gray-100 focus:border-blue-500 focus:outline-none"
+                      />
+                    </form>
+                  ) : (
+                    <span className="flex-1 truncate text-sm text-gray-200">
+                      {document.title || "Untitled"}
+                    </span>
+                  )}
+
                   <button
-                    ref={iconButtonRef}
+                    ref={optionsButtonRef}
                     onClick={(e) => {
                       e.stopPropagation();
-                      setShowIconPicker(true);
+                      setShowOptions(true);
                     }}
-                    className="text-lg hover:scale-110 transition-transform flex-shrink-0"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1 text-gray-500 opacity-0 transition-opacity group-hover:opacity-100 hover:text-gray-200"
+                    aria-label="Document actions"
                   >
-                    {document.icon || "📄"}
+                    ⋮
                   </button>
-
-                  {showIconPicker && (
-                    <IconPicker
-                      currentIcon={document.icon || "📄"}
-                      onSelect={(icon) => updateIconMutation.mutate(icon)}
-                      onClose={() => setShowIconPicker(false)}
-                      triggerRef={iconButtonRef.current}
-                    />
-                  )}
-
-                  {/* Title */}
-                  <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
-                    {document.title || "Untitled"}
-                  </span>
-
-                  {/* Favorite star */}
-                  {isHovered && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleFavorite(document._id!);
-                      }}
-                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
-                    >
-                      <span
-                        className={
-                          isFavorite ? "text-yellow-400" : "text-gray-600"
-                        }
-                      >
-                        {isFavorite ? "★" : "☆"}
-                      </span>
-                    </button>
-                  )}
-
-                  {/* Options button */}
-                  {isHovered && (
-                    <button
-                      ref={optionsButtonRef}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowOptions(true);
-                      }}
-                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
-                    >
-                      <span className="text-gray-400">⋯</span>
-                    </button>
-                  )}
 
                   {showOptions && (
                     <PageOptionsMenu
-                      onAddChild={() => setIsCreatingChild(true)}
+                      onRename={() => setIsRenaming(true)}
+                      onMove={() => onRequestMove(document)}
                       onDelete={() => {
                         if (confirm(`Delete "${document.title}"?`)) {
                           deleteMutation.mutate();
@@ -244,27 +227,6 @@ function SidebarItem({
               </div>
             )}
           </DroppableAny>
-
-          {/* Create child form */}
-          {isCreatingChild && (
-            <form
-              onSubmit={handleCreateChild}
-              style={{ paddingLeft: `${(level + 1) * 12 + 32}px` }}
-              className="px-2 py-1"
-            >
-              <input
-                type="text"
-                value={childTitle}
-                onChange={(e) => setChildTitle(e.target.value)}
-                onBlur={() => {
-                  if (!childTitle.trim()) setIsCreatingChild(false);
-                }}
-                placeholder="Page title..."
-                autoFocus
-                className="w-full px-2 py-1 bg-gray-800 text-white text-sm rounded border border-gray-700 focus:outline-none focus:border-blue-500"
-              />
-            </form>
-          )}
 
           {/* Render children */}
           {hasChildren && isExpanded && (
@@ -281,8 +243,7 @@ function SidebarItem({
                       level={level + 1}
                       allDocuments={allDocuments}
                       index={idx}
-                      favorites={favorites}
-                      onToggleFavorite={onToggleFavorite}
+                      onRequestMove={onRequestMove}
                     />
                   ))}
                   {provided.placeholder as any}
@@ -295,18 +256,15 @@ function SidebarItem({
     </DraggableAny>
   );
 
-  interface SidebarProps {
-    favorites: string[];
-    setFavorites: (favorites: string[]) => void;
-  }
 }
 
-export function Sidebar({ favorites, setFavorites }: SidebarProps) {
+export function Sidebar() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isCreating, setIsCreating] = useState(false);
   const [newDocTitle, setNewDocTitle] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [moveTarget, setMoveTarget] = useState<Document | null>(null);
 
   const { data: documents = [] } = useQuery({
     queryKey: ["documents"],
@@ -442,14 +400,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     });
   };
 
-  const toggleFavorite = (id: string) => {
-    setFavorites(
-      favorites.includes(id)
-        ? favorites.filter((fav) => fav !== id)
-        : [...favorites, id]
-    );
-  };
-
   const rootDocuments = sortDocuments(documents.filter((doc) => !doc.parentId));
 
   const filteredRootDocs = searchQuery
@@ -457,6 +407,29 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
         doc.title.toLowerCase().includes(searchQuery.toLowerCase())
       )
     : rootDocuments;
+
+  const handleMoveConfirm = (destinationParentId: string | null) => {
+    if (!moveTarget?._id) {
+      setMoveTarget(null);
+      return;
+    }
+
+    const siblings = sortDocuments(
+      documents.filter(
+        (doc) => (doc.parentId ?? null) === (destinationParentId ?? null)
+      )
+    ).filter((doc) => doc._id !== moveTarget._id);
+
+    updateMutation.mutate({
+      id: moveTarget._id,
+      data: {
+        parentId: destinationParentId,
+        order: siblings.length,
+      },
+    });
+
+    setMoveTarget(null);
+  };
 
   return (
     <DragDropContextAny onDragEnd={handleDragEnd}>
@@ -535,8 +508,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
                     level={0}
                     allDocuments={documents}
                     index={idx}
-                    favorites={favorites}
-                    onToggleFavorite={toggleFavorite}
+                    onRequestMove={(target) => setMoveTarget(target)}
                   />
                 ))}
                 {provided.placeholder as any}
@@ -570,6 +542,14 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
           </div>
         </div>
       </div>
+      {moveTarget && (
+        <MoveDocumentModal
+          documents={documents}
+          document={moveTarget}
+          onClose={() => setMoveTarget(null)}
+          onMove={handleMoveConfirm}
+        />
+      )}
     </DragDropContextAny>
   );
 }
