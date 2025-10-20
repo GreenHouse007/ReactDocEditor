@@ -8,7 +8,7 @@ import {
   useRef,
   useMemo,
   useCallback,
-  type ChangeEvent,
+  type FormEvent,
 } from "react";
 import { useIndexContext } from "../contexts/IndexContext";
 import type { Document } from "@enfield/types";
@@ -31,9 +31,18 @@ export function DocumentEdit() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
+  const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
+  const [newWorkspaceTitle, setNewWorkspaceTitle] = useState("");
 
   const titleTimerRef = useRef<NodeJS.Timeout>();
   const contentTimerRef = useRef<NodeJS.Timeout>();
+  const workspaceMenuRef = useRef<HTMLDivElement>(null);
+  const closeWorkspaceMenu = useCallback(() => {
+    setIsWorkspaceMenuOpen(false);
+    setIsCreatingWorkspace(false);
+    setNewWorkspaceTitle("");
+  }, []);
 
   const { data: document, isLoading } = useQuery({
     queryKey: ["document", id],
@@ -116,6 +125,35 @@ export function DocumentEdit() {
     }
   }, [currentIndexId, selectedIndexId, setSelectedIndexId]);
 
+  useEffect(() => {
+    if (!isWorkspaceMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        workspaceMenuRef.current &&
+        !workspaceMenuRef.current.contains(event.target as Node)
+      ) {
+        closeWorkspaceMenu();
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeWorkspaceMenu();
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeWorkspaceMenu, isWorkspaceMenuOpen]);
+
   const currentIndex = useMemo(() => {
     if (!currentIndexId) {
       return null;
@@ -134,6 +172,26 @@ export function DocumentEdit() {
       queryClient.invalidateQueries({ queryKey: ["document", id] });
       queryClient.invalidateQueries({ queryKey: ["documents"] });
       setIsSaving(false);
+    },
+  });
+
+  const createWorkspaceMutation = useMutation({
+    mutationFn: (workspaceTitle: string) =>
+      api.createDocument({
+        title: workspaceTitle,
+        authorId: "demo-user",
+      }),
+    onSuccess: (newWorkspace) => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      closeWorkspaceMenu();
+      if (newWorkspace?._id) {
+        setSelectedIndexId(newWorkspace._id);
+        navigate(`/document/${newWorkspace._id}`);
+      }
+    },
+    onError: (error) => {
+      console.error("Failed to create workspace:", error);
+      alert("Unable to create workspace. Please try again.");
     },
   });
 
@@ -203,51 +261,157 @@ export function DocumentEdit() {
     }
   };
 
-  const handleIndexChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    const nextIndexId = event.target.value;
-    if (!nextIndexId || nextIndexId === currentIndexId) {
+  const handleWorkspaceSelect = (workspaceId: string | null | undefined) => {
+    if (!workspaceId) {
       return;
     }
-    setSelectedIndexId(nextIndexId);
-    navigate(`/document/${nextIndexId}`);
+
+    if (workspaceId === currentIndexId) {
+      closeWorkspaceMenu();
+      return;
+    }
+
+    setSelectedIndexId(workspaceId);
+    closeWorkspaceMenu();
+    navigate(`/document/${workspaceId}`);
+  };
+
+  const handleCreateWorkspaceSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!newWorkspaceTitle.trim()) {
+      return;
+    }
+
+    createWorkspaceMutation.mutate(newWorkspaceTitle.trim());
   };
 
   const saveStatus =
     isSaving || updateMutation.isPending ? "Saving..." : "All changes saved";
 
-  const currentIndexTitle = currentIndex?.title || "Untitled Index";
+  const currentIndexTitle = currentIndex?.title || "No workspace selected";
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
-      <div className="flex justify-end gap-4 px-8 pt-6 text-sm text-gray-400">
-        <button
-          onClick={handleExportPDF}
-          className="rounded bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-500"
-        >
-          Export PDF
-        </button>
-        <div>{saveStatus}</div>
-      </div>
-
-      <div className="mx-auto w-full max-w-6xl px-8 pt-10">
-        <div className="mb-6 flex flex-wrap items-center gap-3 text-sm text-gray-400">
-          <span className="uppercase text-xs tracking-wide text-gray-500">Index</span>
-          <h2 className="text-lg font-semibold text-white">{currentIndexTitle}</h2>
-          {indexes.length > 0 && (
-            <select
-              value={currentIndexId ?? ""}
-              onChange={handleIndexChange}
-              className="rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+      <div className="flex flex-wrap items-center justify-between gap-4 px-8 pt-6">
+        <div className="relative" ref={workspaceMenuRef}>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                if (isWorkspaceMenuOpen) {
+                  closeWorkspaceMenu();
+                } else {
+                  setIsCreatingWorkspace(false);
+                  setNewWorkspaceTitle("");
+                  setIsWorkspaceMenuOpen(true);
+                }
+              }}
+              className="flex h-10 w-10 items-center justify-center rounded-md bg-gray-800 text-xl text-gray-200 transition-colors hover:bg-gray-700"
+              aria-haspopup="true"
+              aria-expanded={isWorkspaceMenuOpen}
+              aria-label="Choose workspace"
+              type="button"
             >
-              {indexes.map((indexDoc) => (
-                <option key={indexDoc._id} value={indexDoc._id}>
-                  {indexDoc.title || "Untitled Index"}
-                </option>
-              ))}
-            </select>
+              ☰
+            </button>
+            <h2 className="text-lg font-semibold text-white">{currentIndexTitle}</h2>
+          </div>
+
+          {isWorkspaceMenuOpen && (
+            <div className="absolute left-0 z-20 mt-3 w-72 rounded-lg border border-gray-700 bg-gray-800 shadow-xl">
+              <div className="border-b border-gray-700 px-4 py-3">
+                <span className="text-xs font-semibold uppercase text-gray-400">
+                  Workspaces
+                </span>
+              </div>
+              <div className="max-h-64 overflow-y-auto px-3 py-2">
+                {indexes.length > 0 ? (
+                  <ul className="space-y-1">
+                    {indexes.map((indexDoc) => (
+                      <li key={indexDoc._id}>
+                        <button
+                          type="button"
+                          onClick={() => handleWorkspaceSelect(indexDoc._id)}
+                          className={`w-full rounded px-2 py-2 text-left text-sm transition-colors ${
+                            currentIndexId === indexDoc._id
+                              ? "bg-blue-600 text-white"
+                              : "text-gray-200 hover:bg-gray-700"
+                          }`}
+                        >
+                          {indexDoc.title || "Untitled Workspace"}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="py-6 text-sm text-gray-400">
+                    No workspaces yet.
+                  </div>
+                )}
+              </div>
+              <div className="border-t border-gray-700 p-4">
+                {isCreatingWorkspace ? (
+                  <form
+                    onSubmit={handleCreateWorkspaceSubmit}
+                    className="space-y-3"
+                  >
+                    <input
+                      type="text"
+                      value={newWorkspaceTitle}
+                      onChange={(event) => setNewWorkspaceTitle(event.target.value)}
+                      placeholder="Workspace title..."
+                      autoFocus
+                      className="w-full rounded border border-gray-600 bg-gray-900 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                    />
+                    <div className="flex justify-end gap-2 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCreatingWorkspace(false);
+                          setNewWorkspaceTitle("");
+                        }}
+                        className="rounded px-3 py-1 text-gray-300 transition-colors hover:bg-gray-700 hover:text-white"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={createWorkspaceMutation.isPending}
+                        className="rounded bg-blue-600 px-3 py-1 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Create
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCreatingWorkspace(true);
+                      setNewWorkspaceTitle("");
+                    }}
+                    className="w-full rounded bg-gray-900 px-3 py-2 text-sm font-medium text-gray-200 transition-colors hover:bg-gray-700"
+                  >
+                    + New workspace
+                  </button>
+                )}
+              </div>
+            </div>
           )}
         </div>
 
+        <div className="flex items-center gap-4 text-sm text-gray-400">
+          <button
+            onClick={handleExportPDF}
+            className="rounded bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-500"
+            type="button"
+          >
+            Export PDF
+          </button>
+          <div>{saveStatus}</div>
+        </div>
+      </div>
+
+      <div className="mx-auto w-full max-w-6xl px-8 pt-10">
         <input
           type="text"
           value={title}

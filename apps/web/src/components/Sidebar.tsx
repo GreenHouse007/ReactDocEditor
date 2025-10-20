@@ -59,6 +59,11 @@ function isDescendant(
   return false;
 }
 
+type ReorderPayload = {
+  updates: { id: string; data: UpdateDocumentDto }[];
+  updatedDocuments: Document[];
+};
+
 interface SidebarItemProps {
   document: Document;
   index: number;
@@ -198,7 +203,6 @@ function SidebarItem({
                     ⋯
                   </button>
                 </div>
-                {dropProvided.placeholder}
               </div>
             )}
           </DroppableAny>
@@ -261,8 +265,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   const [newPageTitle, setNewPageTitle] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [isCreatingIndex, setIsCreatingIndex] = useState(false);
-  const [newIndexTitle, setNewIndexTitle] = useState("");
 
   const { data: documents = [] } = useQuery({
     queryKey: ["documents"],
@@ -413,33 +415,38 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     },
   });
 
-  const createIndexMutation = useMutation({
-    mutationFn: (title: string) =>
-      api.createDocument({
-        title,
-        authorId: "demo-user",
-      }),
-    onSuccess: (document) => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      setIsCreatingIndex(false);
-      setNewIndexTitle("");
-      if (document._id) {
-        setSelectedIndexId(document._id);
-      }
-    },
-  });
-
-  const reorderMutation = useMutation({
-    mutationFn: async (updates: { id: string; data: UpdateDocumentDto }[]) => {
+  const reorderMutation = useMutation<
+    void,
+    unknown,
+    ReorderPayload,
+    { previousDocuments?: Document[] }
+  >({
+    mutationFn: async ({ updates }: ReorderPayload) => {
       await Promise.all(
         updates.map(({ id, data }) => api.updateDocument(id, data))
       );
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
+    onMutate: async ({ updatedDocuments }: ReorderPayload) => {
+      await queryClient.cancelQueries({ queryKey: ["documents"] });
+      const previousDocuments = queryClient.getQueryData<Document[]>([
+        "documents",
+      ]);
+
+      queryClient.setQueryData<Document[]>(
+        ["documents"],
+        updatedDocuments
+      );
+
+      return { previousDocuments };
     },
-    onError: (error) => {
+    onError: (error, _variables, context) => {
       console.error("Failed to reorder documents:", error);
+      if (context?.previousDocuments) {
+        queryClient.setQueryData(["documents"], context.previousDocuments);
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
     },
   });
 
@@ -450,13 +457,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     }
     if (newPageTitle.trim()) {
       createPageMutation.mutate(newPageTitle.trim());
-    }
-  };
-
-  const handleCreateIndexSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (newIndexTitle.trim()) {
-      createIndexMutation.mutate(newIndexTitle.trim());
     }
   };
 
@@ -492,9 +492,9 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       return;
     }
 
-    const { destination, source, draggableId } = result;
+    const { destination, source, draggableId, combine } = result;
 
-    if (!destination) {
+    if (!destination && !combine) {
       return;
     }
 
@@ -546,7 +546,36 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     const sourceParentId = parseListParentId(source.droppableId);
 
     try {
-      if (destination.droppableId.startsWith("into:")) {
+      if (combine) {
+        const destParentId = combine.draggableId;
+
+        if (!destParentId || destParentId === draggableId) {
+          return;
+        }
+
+        if (isDescendant(documentsInIndex, destParentId, draggableId)) {
+          return;
+        }
+
+        if (getRootId(destParentId) !== selectedIndex._id) {
+          return;
+        }
+
+        const destSiblings = getSiblings(destParentId).filter(
+          (doc) => doc._id !== draggableId
+        );
+        destSiblings.push({ ...movingDoc, parentId: destParentId });
+        reindexSiblings(destSiblings, destParentId);
+
+        if (sourceParentId !== destParentId) {
+          const sourceSiblings = getSiblings(sourceParentId).filter(
+            (doc) => doc._id !== draggableId
+          );
+          reindexSiblings(sourceSiblings, sourceParentId);
+        }
+
+        ensureExpanded(destParentId);
+      } else if (destination && destination.droppableId.startsWith("into:")) {
         const destParentId = destination.droppableId.replace("into:", "");
 
         if (!destParentId || destParentId === draggableId) {
@@ -575,7 +604,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
         }
 
         ensureExpanded(destParentId);
-      } else if (destination.droppableId.startsWith("list:")) {
+      } else if (destination && destination.droppableId.startsWith("list:")) {
         const destParentId = parseListParentId(destination.droppableId);
 
         if (!destParentId) {
@@ -626,7 +655,19 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
         return;
       }
 
-      await reorderMutation.mutateAsync(updates);
+      const nextDocuments = documents.map((doc) => {
+        if (!doc._id) {
+          return doc;
+        }
+
+        const update = updatesMap.get(doc._id);
+        return update ? { ...doc, ...update } : doc;
+      });
+
+      await reorderMutation.mutateAsync({
+        updates,
+        updatedDocuments: nextDocuments,
+      });
     } catch (error) {
       console.error("Failed to handle drag and drop:", error);
     }
@@ -652,7 +693,11 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       : "list:none";
 
     return (
-      <DroppableAny droppableId={droppableId} type="document">
+      <DroppableAny
+        droppableId={droppableId}
+        type="document"
+        isCombineEnabled
+      >
         {(provided: any) => (
           <div
             ref={provided.innerRef}
@@ -725,60 +770,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
           </button>
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs font-semibold uppercase text-gray-400">
-              <span>Index</span>
-              <button
-                onClick={() => {
-                  setIsCreatingIndex(true);
-                }}
-                className="text-blue-400 transition-colors hover:text-blue-300"
-              >
-                + New
-              </button>
-            </div>
-
-            {indexes.length > 0 ? (
-              <select
-                value={selectedIndex?._id ?? ""}
-                onChange={(event) => {
-                  const nextId = event.target.value || null;
-                  setSelectedIndexId(nextId);
-                  if (nextId) {
-                    setExpandedIds(new Set());
-                  }
-                }}
-                className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
-              >
-                {indexes.map((indexDoc) => (
-                  <option key={indexDoc._id} value={indexDoc._id}>
-                    {indexDoc.title || "Untitled Index"}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <div className="rounded border border-dashed border-gray-700 px-3 py-2 text-xs text-gray-400">
-                Create an index to start organizing pages.
-              </div>
-            )}
-
-            {isCreatingIndex && (
-              <form onSubmit={handleCreateIndexSubmit} className="space-y-2">
-                <input
-                  type="text"
-                  value={newIndexTitle}
-                  onChange={(event) => setNewIndexTitle(event.target.value)}
-                  onBlur={() => {
-                    if (!newIndexTitle.trim()) {
-                      setIsCreatingIndex(false);
-                    }
-                  }}
-                  placeholder="Index title..."
-                  autoFocus
-                  className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
-                />
-              </form>
-            )}
-
             <input
               type="text"
               value={searchQuery}
@@ -794,7 +785,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
             <>
               <div className="flex items-center justify-between px-2 py-2">
                 <span className="text-xs font-semibold uppercase text-gray-400">
-                  Pages in {selectedIndex.title || "Untitled Index"}
+                  Pages
                 </span>
                 <button
                   onClick={() => {
@@ -845,7 +836,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
             </>
           ) : (
             <div className="px-2 py-8 text-center text-sm text-gray-500">
-              Create an index to begin adding pages.
+              Select a workspace to view its pages.
             </div>
           )}
         </div>
