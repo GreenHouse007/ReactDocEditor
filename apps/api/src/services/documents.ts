@@ -119,3 +119,31 @@ export async function deleteDocument(id: string): Promise<boolean> {
 
   return result.deletedCount > 0;
 }
+
+export async function getDocumentsByIds(ids: string[]): Promise<Document[]> {
+  const db = getDatabase();
+  const validIds = ids.filter((id) => ObjectId.isValid(id));
+
+  if (validIds.length === 0) {
+    return [];
+  }
+
+  const objectIds = validIds.map((id) => new ObjectId(id));
+
+  const documents = await db
+    .collection(COLLECTION)
+    .find({ _id: { $in: objectIds } })
+    .toArray();
+
+  return documents.map((doc) => ({
+    _id: doc._id.toString(),
+    title: doc.title,
+    content: doc.content,
+    authorId: doc.authorId,
+    parentId: doc.parentId || null,
+    icon: doc.icon || "📄",
+    order: doc.order ?? 0,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  }));
+}

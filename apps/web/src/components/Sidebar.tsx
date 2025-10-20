@@ -1,19 +1,16 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Document, UpdateDocumentDto } from "@enfield/types";
-import { IconPicker } from "./IconPicker";
-import { PageOptionsMenu } from "./PageOptionsMenu";
+import { DocumentActionMenu } from "./DocumentActionMenu";
+import { MoveDocumentDialog } from "./MoveDocumentDialog";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 
-// Workaround for type conflicts between multiple @types/react versions in the monorepo.
-// Cast the DnD components to `any` so they can be used in JSX without TypeScript errors.
 const DragDropContextAny = DragDropContext as any;
 const DroppableAny = Droppable as any;
 const DraggableAny = Draggable as any;
 
-// Helper function to sort documents by order
 function sortDocuments(docs: Document[]): Document[] {
   return [...docs].sort((a, b) => {
     const orderA = a.order ?? 999999;
@@ -29,6 +26,9 @@ interface SidebarItemProps {
   index: number;
   favorites: string[];
   onToggleFavorite: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onDelete: (id: string) => void;
+  onMoveRequest: (id: string) => void;
 }
 
 function SidebarItem({
@@ -38,18 +38,30 @@ function SidebarItem({
   index,
   favorites,
   onToggleFavorite,
+  onRename,
+  onDelete,
+  onMoveRequest,
 }: SidebarItemProps) {
   const navigate = useNavigate();
   const { id: currentId } = useParams();
-  const queryClient = useQueryClient();
   const [isExpanded, setIsExpanded] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
-  const [showIconPicker, setShowIconPicker] = useState(false);
-  const [showOptions, setShowOptions] = useState(false);
-  const [isCreatingChild, setIsCreatingChild] = useState(false);
-  const [childTitle, setChildTitle] = useState("");
-  const iconButtonRef = useRef<HTMLButtonElement>(null);
-  const optionsButtonRef = useRef<HTMLButtonElement>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(document.title || "Untitled");
+  const [showMenu, setShowMenu] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setRenameValue(document.title || "Untitled");
+  }, [document.title]);
+
+  useEffect(() => {
+    if (isRenaming && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isRenaming]);
 
   const children = sortDocuments(
     allDocuments.filter((doc) => doc.parentId === document._id)
@@ -58,52 +70,33 @@ function SidebarItem({
   const isActive = currentId === document._id;
   const isFavorite = favorites.includes(document._id || "");
 
-  const updateIconMutation = useMutation({
-    mutationFn: (icon: string) => {
-      console.log("Updating icon to:", icon, "for document:", document._id);
-      return api.updateDocument(document._id!, { icon });
-    },
-    onSuccess: () => {
-      console.log("Icon update successful");
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      queryClient.invalidateQueries({ queryKey: ["document", document._id] });
-    },
-    onError: (error) => {
-      console.error("Icon update failed:", error);
-    },
-  });
+  const handleNavigate = () => {
+    if (isRenaming) return;
+    navigate(`/document/${document._id}`);
+  };
 
-  const deleteMutation = useMutation({
-    mutationFn: () => api.deleteDocument(document._id!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      if (currentId === document._id) {
-        navigate("/");
-      }
-    },
-  });
+  const handleRenameCommit = () => {
+    const trimmed = renameValue.trim();
+    if (!document._id) {
+      setIsRenaming(false);
+      return;
+    }
+    if (trimmed && trimmed !== document.title) {
+      onRename(document._id, trimmed);
+    }
+    setRenameValue(trimmed || document.title || "Untitled");
+    setIsRenaming(false);
+  };
 
-  const createChildMutation = useMutation({
-    mutationFn: (title: string) =>
-      api.createDocument({
-        title,
-        authorId: "demo-user",
-        parentId: document._id,
-        icon: "📄",
-      }),
-    onSuccess: (newDoc) => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
-      setIsCreatingChild(false);
-      setChildTitle("");
-      setIsExpanded(true);
-      navigate(`/document/${newDoc._id}`);
-    },
-  });
-
-  const handleCreateChild = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (childTitle.trim()) {
-      createChildMutation.mutate(childTitle);
+  const handleRenameKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      handleRenameCommit();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setRenameValue(document.title || "Untitled");
+      setIsRenaming(false);
     }
   };
 
@@ -113,130 +106,95 @@ function SidebarItem({
         <div
           ref={provided.innerRef}
           {...provided.draggableProps}
-          className={snapshot.isDragging ? "opacity-50" : ""}
+          className={`transition-opacity ${snapshot.isDragging ? "opacity-50" : ""}`}
         >
-          {/* Wrap the item in a Droppable so we can drop onto it */}
-          <DroppableAny
-            droppableId={`nest-${document._id}`}
-            type="document"
-            isDropDisabled={false}
-          >
+          <DroppableAny droppableId={`nest-${document._id}`} type="document" isDropDisabled={false}>
             {(droppableProvided: any, droppableSnapshot: any) => (
               <div
                 ref={droppableProvided.innerRef}
                 {...droppableProvided.droppableProps}
-                className={`
-                ${
+                className={`${
                   droppableSnapshot.isDraggingOver
-                    ? "bg-blue-900/30 ring-2 ring-blue-500/50"
+                    ? "rounded-lg border border-blue-500/40 bg-blue-900/20"
                     : ""
-                }
-              `}
+                }`}
               >
                 <div
-                  className={`
-                  relative flex items-center gap-1 px-2 py-1 rounded cursor-pointer group
-                  hover:bg-gray-800/50 transition-colors
-                  ${isActive ? "bg-gray-800" : ""}
-                `}
-                  style={{ paddingLeft: `${level * 12 + 8}px` }}
+                  className={`group relative flex items-center gap-2 rounded-xl px-2 py-2 transition-all duration-150 hover:bg-white/5 ${
+                    isActive ? "bg-white/10" : ""
+                  }`}
+                  style={{ paddingLeft: `${level * 14 + 12}px` }}
                   onMouseEnter={() => setIsHovered(true)}
                   onMouseLeave={() => setIsHovered(false)}
-                  onClick={() => navigate(`/document/${document._id}`)}
+                  onClick={handleNavigate}
                 >
-                  {/* Drag handle */}
-                  <div {...provided.dragHandleProps} className="flex-shrink-0">
-                    <div className="w-4 h-4 flex items-center justify-center text-gray-600 hover:text-gray-400 opacity-0 group-hover:opacity-100">
-                      ⋮⋮
-                    </div>
-                  </div>
-
-                  {/* Expand/collapse arrow */}
                   {hasChildren ? (
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setIsExpanded(!isExpanded);
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setIsExpanded((prev) => !prev);
                       }}
-                      className="w-4 h-4 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                      className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded hover:bg-white/10"
                     >
-                      <span className="text-xs text-gray-400">
-                        {isExpanded ? "▼" : "▶"}
-                      </span>
+                      <span className="text-xs text-gray-400">{isExpanded ? "▼" : "▶"}</span>
                     </button>
                   ) : (
-                    <div className="w-4 flex-shrink-0" />
+                    <span className="h-6 w-6 flex-shrink-0" />
                   )}
 
-                  {/* Icon */}
-                  <button
-                    ref={iconButtonRef}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowIconPicker(true);
-                    }}
-                    className="text-lg hover:scale-110 transition-transform flex-shrink-0"
+                  <div
+                    className="flex min-w-0 flex-1 items-center gap-2"
+                    {...provided.dragHandleProps}
                   >
-                    {document.icon || "📄"}
-                  </button>
+                    {isRenaming ? (
+                      <input
+                        ref={inputRef}
+                        value={renameValue}
+                        onChange={(event) => setRenameValue(event.target.value)}
+                        onBlur={handleRenameCommit}
+                        onKeyDown={handleRenameKeyDown}
+                        onClick={(event) => event.stopPropagation()}
+                        className="w-full rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-sm text-white focus:border-blue-400 focus:outline-none"
+                      />
+                    ) : (
+                      <span className="cursor-grab text-sm font-medium text-gray-200 transition active:cursor-grabbing">
+                        {document.title || "Untitled"}
+                      </span>
+                    )}
+                  </div>
 
-                  {showIconPicker && (
-                    <IconPicker
-                      currentIcon={document.icon || "📄"}
-                      onSelect={(icon) => updateIconMutation.mutate(icon)}
-                      onClose={() => setShowIconPicker(false)}
-                      triggerRef={iconButtonRef.current}
-                    />
-                  )}
-
-                  {/* Title */}
-                  <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
-                    {document.title || "Untitled"}
-                  </span>
-
-                  {/* Favorite star */}
                   {isHovered && (
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
+                      onClick={(event) => {
+                        event.stopPropagation();
                         onToggleFavorite(document._id!);
                       }}
-                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                      className="flex h-6 w-6 items-center justify-center rounded-lg text-xs text-yellow-400 transition hover:bg-yellow-400/10"
                     >
-                      <span
-                        className={
-                          isFavorite ? "text-yellow-400" : "text-gray-600"
-                        }
-                      >
-                        {isFavorite ? "★" : "☆"}
-                      </span>
+                      {isFavorite ? "★" : "☆"}
                     </button>
                   )}
 
-                  {/* Options button */}
                   {isHovered && (
                     <button
-                      ref={optionsButtonRef}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowOptions(true);
+                      ref={menuButtonRef}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setShowMenu(true);
                       }}
-                      className="w-6 h-6 flex items-center justify-center hover:bg-gray-700 rounded flex-shrink-0"
+                      className="flex h-6 w-6 items-center justify-center rounded-lg text-lg text-gray-400 transition hover:bg-white/10 hover:text-white"
                     >
-                      <span className="text-gray-400">⋯</span>
+                      ⋮
                     </button>
                   )}
 
-                  {showOptions && (
-                    <PageOptionsMenu
-                      onAddChild={() => setIsCreatingChild(true)}
-                      onDelete={() => {
-                        if (confirm(`Delete "${document.title}"?`)) {
-                          deleteMutation.mutate();
-                        }
-                      }}
-                      onClose={() => setShowOptions(false)}
-                      triggerRef={optionsButtonRef.current}
+                  {showMenu && (
+                    <DocumentActionMenu
+                      onRename={() => setIsRenaming(true)}
+                      onMove={() => onMoveRequest(document._id!)}
+                      onDelete={() => onDelete(document._id!)}
+                      onClose={() => setShowMenu(false)}
+                      triggerRef={menuButtonRef.current}
                     />
                   )}
                 </div>
@@ -245,47 +203,33 @@ function SidebarItem({
             )}
           </DroppableAny>
 
-          {/* Create child form */}
-          {isCreatingChild && (
-            <form
-              onSubmit={handleCreateChild}
-              style={{ paddingLeft: `${(level + 1) * 12 + 32}px` }}
-              className="px-2 py-1"
-            >
-              <input
-                type="text"
-                value={childTitle}
-                onChange={(e) => setChildTitle(e.target.value)}
-                onBlur={() => {
-                  if (!childTitle.trim()) setIsCreatingChild(false);
-                }}
-                placeholder="Page title..."
-                autoFocus
-                className="w-full px-2 py-1 bg-gray-800 text-white text-sm rounded border border-gray-700 focus:outline-none focus:border-blue-500"
-              />
-            </form>
-          )}
-
-          {/* Render children */}
-          {hasChildren && isExpanded && (
-            <DroppableAny
-              droppableId={`children-${document._id}`}
-              type="document"
-            >
-              {(provided: any) => (
-                <div ref={provided.innerRef} {...provided.droppableProps}>
-                  {children.map((child, idx) => (
-                    <SidebarItem
-                      key={child._id}
-                      document={child}
-                      level={level + 1}
-                      allDocuments={allDocuments}
-                      index={idx}
-                      favorites={favorites}
-                      onToggleFavorite={onToggleFavorite}
-                    />
-                  ))}
-                  {provided.placeholder as any}
+          {hasChildren && (
+            <DroppableAny droppableId={`children-${document._id}`} type="document">
+              {(providedChildren: any) => (
+                <div
+                  ref={providedChildren.innerRef}
+                  {...providedChildren.droppableProps}
+                  className={`overflow-hidden transition-[max-height] duration-300 ease-in-out ${
+                    isExpanded ? "max-h-[1000px]" : "max-h-0"
+                  }`}
+                >
+                  <div className="space-y-0.5 py-0.5">
+                    {children.map((child, idx) => (
+                      <SidebarItem
+                        key={child._id}
+                        document={child}
+                        level={level + 1}
+                        allDocuments={allDocuments}
+                        index={idx}
+                        favorites={favorites}
+                        onToggleFavorite={onToggleFavorite}
+                        onRename={onRename}
+                        onDelete={onDelete}
+                        onMoveRequest={onMoveRequest}
+                      />
+                    ))}
+                  </div>
+                  {providedChildren.placeholder as any}
                 </div>
               )}
             </DroppableAny>
@@ -294,19 +238,21 @@ function SidebarItem({
       )}
     </DraggableAny>
   );
+}
 
-  interface SidebarProps {
-    favorites: string[];
-    setFavorites: (favorites: string[]) => void;
-  }
+interface SidebarProps {
+  favorites: string[];
+  setFavorites: (favorites: string[]) => void;
 }
 
 export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   const navigate = useNavigate();
+  const { id: currentDocumentId } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
   const [isCreating, setIsCreating] = useState(false);
   const [newDocTitle, setNewDocTitle] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [movingDocumentId, setMovingDocumentId] = useState<string | null>(null);
 
   const { data: documents = [] } = useQuery({
     queryKey: ["documents"],
@@ -336,8 +282,19 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     },
   });
 
-  const handleCreateSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteDocument(id),
+    onSuccess: (_, deletedId) => {
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      queryClient.invalidateQueries({ queryKey: ["document"] });
+      if (currentDocumentId === deletedId) {
+        navigate("/");
+      }
+    },
+  });
+
+  const handleCreateSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
     if (newDocTitle.trim()) {
       createMutation.mutate(newDocTitle);
     }
@@ -346,10 +303,7 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
   const handleDragEnd = (result: any) => {
     const { destination, source, draggableId } = result;
 
-    console.log("Drag ended:", { destination, source, draggableId });
-
     if (!destination) {
-      console.log("No destination - dropped outside");
       return;
     }
 
@@ -357,18 +311,14 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       destination.droppableId === source.droppableId &&
       destination.index === source.index
     ) {
-      console.log("No movement detected");
       return;
     }
 
     let destParentId: string | null = null;
 
-    // Check if dropped onto a document (nest operation)
     if (destination.droppableId.startsWith("nest-")) {
       destParentId = destination.droppableId.replace("nest-", "");
-      console.log("Nesting document under:", destParentId);
 
-      // Make it a child and set order to 0 (first child)
       updateMutation.mutate({
         id: draggableId,
         data: {
@@ -379,7 +329,6 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       return;
     }
 
-    // Normal drop in a list
     destParentId =
       destination.droppableId === "root"
         ? null
@@ -390,16 +339,8 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
         ? null
         : source.droppableId.replace("children-", "");
 
-    console.log("Moving document:", {
-      documentId: draggableId,
-      fromParent: sourceParentId,
-      toParent: destParentId,
-      newIndex: destination.index,
-    });
-
     const newOrder = destination.index;
 
-    // Update the dragged document
     updateMutation.mutate({
       id: draggableId,
       data: {
@@ -408,12 +349,11 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
       },
     });
 
-    // Adjust orders for sibling documents
     const destParentIdStr = destParentId;
     const sourceParentIdStr = sourceParentId;
 
     const siblings = sortDocuments(
-      documents.filter((d) => (d.parentId ?? null) === destParentIdStr)
+      documents.filter((doc) => (doc.parentId ?? null) === destParentIdStr)
     );
 
     siblings.forEach((doc, idx) => {
@@ -450,6 +390,18 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
     );
   };
 
+  const handleRename = (id: string, title: string) => {
+    updateMutation.mutate({
+      id,
+      data: { title },
+    });
+  };
+
+  const handleDelete = (id: string) => {
+    if (!confirm("Delete this document?")) return;
+    deleteMutation.mutate(id);
+  };
+
   const rootDocuments = sortDocuments(documents.filter((doc) => !doc.parentId));
 
   const filteredRootDocs = searchQuery
@@ -460,45 +412,42 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
 
   return (
     <DragDropContextAny onDragEnd={handleDragEnd}>
-      <div className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col h-screen">
-        {/* Header */}
-        <div className="p-4 border-b border-gray-800">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold">E</span>
+      <div className="flex h-screen w-64 flex-col border-r border-white/10 bg-gray-950/80 backdrop-blur-lg">
+        <div className="border-b border-white/5 p-4">
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 shadow-lg">
+              <span className="text-lg font-bold text-white">E</span>
             </div>
             <div>
-              <div className="text-white font-semibold text-sm">Enfield</div>
-              <div className="text-gray-400 text-xs">World Builder</div>
+              <div className="text-sm font-semibold text-white">Enfield</div>
+              <div className="text-xs text-gray-400">World Builder</div>
             </div>
           </div>
 
           <button
             onClick={() => navigate("/")}
-            className="w-full px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded text-sm text-gray-200 transition-colors mb-3"
+            className="mb-3 w-full rounded-xl border border-white/5 bg-white/5 px-3 py-2 text-sm text-gray-200 transition hover:bg-white/10"
           >
-            🏠 Dashboard
+            Dashboard
           </button>
 
-          {/* Search */}
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="Search pages..."
-            className="w-full px-3 py-2 bg-gray-800 text-white text-sm rounded border border-gray-700 focus:outline-none focus:border-blue-500"
+            className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:border-blue-400 focus:outline-none"
           />
         </div>
 
-        {/* Pages Section */}
-        <div className="flex-1 overflow-y-auto p-2">
-          <div className="flex items-center justify-between px-2 py-2">
-            <span className="text-xs text-gray-400 uppercase font-semibold">
-              Pages
+        <div className="flex-1 overflow-y-auto p-3">
+          <div className="mb-2 flex items-center justify-between px-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+              Documents
             </span>
             <button
               onClick={() => setIsCreating(true)}
-              className="w-5 h-5 flex items-center justify-center hover:bg-gray-800 rounded text-gray-400 hover:text-white transition-colors"
+              className="flex h-6 w-6 items-center justify-center rounded-lg text-gray-400 transition hover:bg-white/10 hover:text-white"
               title="Add page"
             >
               +
@@ -506,28 +455,24 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
           </div>
 
           {isCreating && (
-            <form onSubmit={handleCreateSubmit} className="px-2 mb-2">
+            <form onSubmit={handleCreateSubmit} className="px-2 pb-2">
               <input
                 type="text"
                 value={newDocTitle}
-                onChange={(e) => setNewDocTitle(e.target.value)}
+                onChange={(event) => setNewDocTitle(event.target.value)}
                 onBlur={() => {
                   if (!newDocTitle.trim()) setIsCreating(false);
                 }}
                 placeholder="Page title..."
                 autoFocus
-                className="w-full px-2 py-1 bg-gray-800 text-white text-sm rounded border border-gray-700 focus:outline-none focus:border-blue-500"
+                className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white focus:border-blue-400 focus:outline-none"
               />
             </form>
           )}
 
           <DroppableAny droppableId="root" type="document">
             {(provided: any) => (
-              <div
-                ref={provided.innerRef}
-                {...provided.droppableProps}
-                className="space-y-0.5"
-              >
+              <div ref={provided.innerRef} {...provided.droppableProps} className="space-y-0.5">
                 {filteredRootDocs.map((doc, idx) => (
                   <SidebarItem
                     key={doc._id}
@@ -537,6 +482,9 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
                     index={idx}
                     favorites={favorites}
                     onToggleFavorite={toggleFavorite}
+                    onRename={handleRename}
+                    onDelete={handleDelete}
+                    onMoveRequest={(id) => setMovingDocumentId(id)}
                   />
                 ))}
                 {provided.placeholder as any}
@@ -545,31 +493,37 @@ export function Sidebar({ favorites, setFavorites }: SidebarProps) {
           </DroppableAny>
 
           {filteredRootDocs.length === 0 && !isCreating && (
-            <div className="px-2 py-8 text-center text-gray-500 text-sm">
-              {searchQuery
-                ? "No pages found"
-                : "No pages yet. Click + to create one."}
+            <div className="px-2 py-8 text-center text-sm text-gray-500">
+              {searchQuery ? "No pages found" : "No pages yet. Click + to create one."}
             </div>
           )}
         </div>
 
-        {/* User Section */}
-        <div className="p-4 border-t border-gray-800">
+        <div className="border-t border-white/5 p-4">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center">
-              <span className="text-white font-semibold text-sm">A</span>
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-500 text-sm font-semibold text-white">
+              A
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-white text-sm font-medium truncate">
-                Demo User
-              </div>
-              <div className="text-gray-400 text-xs truncate">
-                demo@enfield.app
-              </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-white">Demo User</div>
+              <div className="truncate text-xs text-gray-400">demo@enfield.app</div>
             </div>
           </div>
         </div>
       </div>
+      <MoveDocumentDialog
+        documents={documents}
+        documentId={movingDocumentId || ""}
+        isOpen={Boolean(movingDocumentId)}
+        onClose={() => setMovingDocumentId(null)}
+        onMove={(parentId) => {
+          if (!movingDocumentId) return;
+          updateMutation.mutate({
+            id: movingDocumentId,
+            data: { parentId, order: 0 },
+          });
+        }}
+      />
     </DragDropContextAny>
   );
 }

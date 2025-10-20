@@ -3,6 +3,8 @@ import cors from "@fastify/cors";
 import dotenv from "dotenv";
 import { connectDatabase } from "./services/database.js";
 import { documentRoutes } from "./routes/documents.js";
+import { getDocumentsByIds } from "./services/documents.js";
+import type { Document } from "@enfield/types";
 import puppeteer from "puppeteer";
 
 // Load environment variables
@@ -32,15 +34,40 @@ const start = async () => {
 
     // PDF Export route
     fastify.post<{
-      Body: { title: string; content: any; icon?: string };
+      Body: { documentIds: string[] };
     }>("/api/export-pdf", async (request, reply) => {
       try {
-        const { title, content, icon } = request.body;
+        const { documentIds } = request.body;
 
-        // Generate HTML from Tiptap JSON
-        const html = generateHTMLFromTiptap(title, content, icon);
+        if (!documentIds || documentIds.length === 0) {
+          reply.status(400).send({ error: "No documents selected" });
+          return;
+        }
 
-        // Launch Puppeteer
+        const documents = await getDocumentsByIds(documentIds);
+        const documentMap = new Map<string, Document>();
+        documents.forEach((doc) => {
+          if (doc._id) {
+            documentMap.set(doc._id, doc);
+          }
+        });
+
+        const orderedDocuments = documentIds
+          .map((docId) => documentMap.get(docId))
+          .filter((doc): doc is Document => Boolean(doc));
+
+        if (!orderedDocuments.length) {
+          reply.status(404).send({ error: "Documents not found" });
+          return;
+        }
+
+        const exportTitle =
+          orderedDocuments.length === 1
+            ? orderedDocuments[0].title || "document"
+            : "documents";
+
+        const html = generateHTMLForDocuments(orderedDocuments);
+
         const browser = await puppeteer.launch({
           headless: true,
           args: ["--no-sandbox", "--disable-setuid-sandbox"],
@@ -49,7 +76,6 @@ const start = async () => {
         const page = await browser.newPage();
         await page.setContent(html, { waitUntil: "networkidle0" });
 
-        // Generate PDF
         const pdf = await page.pdf({
           format: "A4",
           margin: {
@@ -63,11 +89,10 @@ const start = async () => {
 
         await browser.close();
 
-        // Send PDF
         reply.type("application/pdf");
         reply.header(
           "Content-Disposition",
-          `attachment; filename="${title || "document"}.pdf"`
+          `attachment; filename="${exportTitle}.pdf"`
         );
         return reply.send(pdf);
       } catch (error) {
@@ -76,81 +101,136 @@ const start = async () => {
       }
     });
 
-    // Helper function to convert Tiptap JSON to HTML
-    function generateHTMLFromTiptap(
-      title: string,
-      content: any,
-      icon?: string
-    ): string {
-      // Basic conversion - you can enhance this
-      let htmlContent = "";
+    function generateHTMLForDocuments(documents: Document[]): string {
+      const sections = documents
+        .map((doc, index) => {
+          const body = doc.content?.content
+            ? doc.content.content.map((node: any) => convertNode(node)).join("")
+            : "";
 
-      if (content && content.content) {
-        content.content.forEach((node: any) => {
-          htmlContent += convertNode(node);
-        });
-      }
+          return `
+            <section class="doc-section">
+              <header class="doc-header">
+                ${doc.icon ? `<span class="doc-icon">${doc.icon}</span>` : ""}
+                <div>
+                  <h1>${doc.title || "Untitled"}</h1>
+                  <p class="doc-meta">Section ${index + 1}</p>
+                </div>
+              </header>
+              <div class="doc-content">${body}</div>
+            </section>
+          `;
+        })
+        .join('<div class="page-break"></div>');
 
       return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <style>
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-          line-height: 1.6;
-          color: #1a1a1a;
-          max-width: 800px;
-          margin: 0 auto;
-          padding: 40px;
-        }
-        h1 {
-          font-size: 2.5em;
-          margin-bottom: 0.5em;
-          font-weight: 700;
-        }
-        h2 { font-size: 2em; margin-top: 1.5em; }
-        h3 { font-size: 1.5em; margin-top: 1.2em; }
-        p { margin: 1em 0; }
-        ul, ol { margin: 1em 0; padding-left: 2em; }
-        li { margin: 0.5em 0; }
-        strong { font-weight: 600; }
-        em { font-style: italic; }
-        code {
-          background: #f4f4f4;
-          padding: 2px 6px;
-          border-radius: 3px;
-          font-family: 'Courier New', monospace;
-        }
-        .icon { font-size: 1.5em; margin-right: 0.3em; }
-      </style>
-    </head>
-    <body>
-      <h1>
-        ${icon ? `<span class="icon">${icon}</span>` : ""}
-        ${title || "Untitled"}
-      </h1>
-      ${htmlContent}
-    </body>
-    </html>
-  `;
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <style>
+            * { box-sizing: border-box; }
+            body {
+              font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              line-height: 1.65;
+              color: #121212;
+              margin: 0;
+              padding: 48px 64px;
+              background: #f4f6fb;
+            }
+            .doc-section {
+              background: rgba(255, 255, 255, 0.9);
+              border-radius: 18px;
+              border: 1px solid rgba(15, 23, 42, 0.08);
+              padding: 32px 36px;
+              margin-bottom: 32px;
+              box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+              backdrop-filter: blur(12px);
+            }
+            .doc-header {
+              display: flex;
+              align-items: center;
+              gap: 16px;
+              margin-bottom: 24px;
+            }
+            .doc-icon {
+              font-size: 36px;
+              filter: drop-shadow(0 12px 20px rgba(59, 130, 246, 0.25));
+            }
+            h1 {
+              font-size: 28px;
+              margin: 0;
+              color: #0f172a;
+              letter-spacing: -0.02em;
+            }
+            .doc-meta {
+              margin: 4px 0 0;
+              font-size: 12px;
+              text-transform: uppercase;
+              letter-spacing: 0.24em;
+              color: rgba(15, 23, 42, 0.45);
+            }
+            .doc-content p {
+              margin: 1em 0;
+              font-size: 15px;
+              color: #1f2937;
+            }
+            .doc-content h2 {
+              font-size: 22px;
+              margin-top: 1.8em;
+              margin-bottom: 0.6em;
+              color: #1e3a8a;
+            }
+            .doc-content h3 {
+              font-size: 18px;
+              margin-top: 1.2em;
+              margin-bottom: 0.5em;
+              color: #1d4ed8;
+            }
+            .doc-content ul,
+            .doc-content ol {
+              margin: 1.2em 0;
+              padding-left: 1.5em;
+            }
+            .doc-content li {
+              margin: 0.4em 0;
+            }
+            .doc-content strong { font-weight: 600; }
+            .doc-content em { font-style: italic; }
+            .doc-content code {
+              background: rgba(15, 23, 42, 0.08);
+              padding: 3px 8px;
+              border-radius: 6px;
+              font-family: 'JetBrains Mono', 'Courier New', monospace;
+              font-size: 13px;
+            }
+            .page-break {
+              page-break-after: always;
+            }
+          </style>
+        </head>
+        <body>
+          ${sections}
+        </body>
+        </html>
+      `;
     }
 
     function convertNode(node: any): string {
-      switch (node.type) {
+      switch (node?.type) {
         case "paragraph":
           return `<p>${convertContent(node.content)}</p>`;
-        case "heading":
+        case "heading": {
           const level = node.attrs?.level || 1;
           return `<h${level}>${convertContent(node.content)}</h${level}>`;
+        }
         case "bulletList":
           return `<ul>${convertContent(node.content)}</ul>`;
         case "orderedList":
           return `<ol>${convertContent(node.content)}</ol>`;
         case "listItem":
           return `<li>${convertContent(node.content)}</li>`;
-        case "text":
+        case "text": {
           let text = node.text || "";
           if (node.marks) {
             node.marks.forEach((mark: any) => {
@@ -160,16 +240,17 @@ const start = async () => {
             });
           }
           return text;
+        }
         case "hardBreak":
           return "<br>";
         default:
-          return convertContent(node.content);
+          return convertContent(node?.content);
       }
     }
 
     function convertContent(content: any[]): string {
       if (!content) return "";
-      return content.map(convertNode).join("");
+      return content.map((node) => convertNode(node)).join("");
     }
 
     // Start server
