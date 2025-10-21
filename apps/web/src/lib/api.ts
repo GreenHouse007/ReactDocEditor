@@ -50,12 +50,15 @@ export const api = {
     });
   },
 
-  // Export document as PDF
-  async exportPDF(title: string, content: any, icon?: string): Promise<Blob> {
+  // Export multiple documents as single PDF
+  async exportPDF(
+    documents: Array<{ title: string; content: any; icon?: string }>,
+    includePageNumbers: boolean
+  ): Promise<Blob> {
     const response = await fetch(`${API_URL}/api/export-pdf`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, content, icon }),
+      body: JSON.stringify({ documents, includePageNumbers }),
     });
 
     if (!response.ok) {

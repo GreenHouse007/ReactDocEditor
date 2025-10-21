@@ -30,15 +30,22 @@ const start = async () => {
     // Register document routes
     await fastify.register(documentRoutes, { prefix: "/api" });
 
-    // PDF Export route
+    // PDF Export route - Multi-document support
     fastify.post<{
-      Body: { title: string; content: any; icon?: string };
+      Body: {
+        documents: Array<{ title: string; content: any; icon?: string }>;
+        includePageNumbers: boolean;
+      };
     }>("/api/export-pdf", async (request, reply) => {
       try {
-        const { title, content, icon } = request.body;
+        const { documents: docs, includePageNumbers } = request.body;
 
-        // Generate HTML from Tiptap JSON
-        const html = generateHTMLFromTiptap(title, content, icon);
+        if (!docs || docs.length === 0) {
+          return reply.status(400).send({ error: "No documents provided" });
+        }
+
+        // Generate combined HTML
+        const html = generateCombinedHTMLFromTiptap(docs, includePageNumbers);
 
         // Launch Puppeteer
         const browser = await puppeteer.launch({
@@ -59,37 +66,60 @@ const start = async () => {
             left: "20mm",
           },
           printBackground: true,
+          displayHeaderFooter: includePageNumbers,
+          headerTemplate: "<div></div>",
+          footerTemplate: includePageNumbers
+            ? '<div style="font-size: 10px; text-align: center; width: 100%;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>'
+            : "<div></div>",
         });
 
         await browser.close();
 
+        // Sanitize filename
+        const sanitizedTitle =
+          docs.length === 1
+            ? (docs[0].title || "document")
+                .replace(/[^a-z0-9]/gi, "_")
+                .substring(0, 50)
+            : "enfield_export";
+
         // Send PDF
-        reply.type("application/pdf");
-        reply.header(
-          "Content-Disposition",
-          `attachment; filename="${title || "document"}.pdf"`
-        );
-        return reply.send(pdf);
+        reply
+          .header("Content-Type", "application/pdf")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="${sanitizedTitle}.pdf"`
+          )
+          .send(Buffer.from(pdf));
       } catch (error) {
         fastify.log.error(error);
         reply.status(500).send({ error: "Failed to generate PDF" });
       }
     });
 
-    // Helper function to convert Tiptap JSON to HTML
-    function generateHTMLFromTiptap(
-      title: string,
-      content: any,
-      icon?: string
+    // Helper function to convert multiple documents to combined HTML
+    function generateCombinedHTMLFromTiptap(
+      docs: Array<{ title: string; content: any; icon?: string }>,
+      includePageNumbers: boolean
     ): string {
-      // Basic conversion - you can enhance this
-      let htmlContent = "";
+      let combinedContent = "";
 
-      if (content && content.content) {
-        content.content.forEach((node: any) => {
-          htmlContent += convertNode(node);
-        });
-      }
+      docs.forEach((doc, index) => {
+        // Add page break before each document except the first
+        if (index > 0) {
+          combinedContent += '<div style="page-break-before: always;"></div>';
+        }
+
+        // Add document title (without icon)
+        combinedContent += `<h1>${doc.title || "Untitled"}</h1>`;
+
+        // Add document content
+        if (doc.content && doc.content.content) {
+          doc.content.content.forEach((node: any) => {
+            combinedContent += convertNode(node);
+          });
+        }
+      });
 
       return `
     <!DOCTYPE html>
@@ -97,46 +127,75 @@ const start = async () => {
     <head>
       <meta charset="UTF-8">
       <style>
+        @page {
+          margin: 20mm;
+          ${
+            includePageNumbers
+              ? `
+            @bottom-center {
+              content: counter(page) " / " counter(pages);
+            }
+          `
+              : ""
+          }
+        }
         body {
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           line-height: 1.6;
           color: #1a1a1a;
-          max-width: 800px;
-          margin: 0 auto;
-          padding: 40px;
+          max-width: 100%;
+          margin: 0;
+          padding: 0;
         }
         h1 {
           font-size: 2.5em;
           margin-bottom: 0.5em;
+          margin-top: 0;
           font-weight: 700;
+          color: #000;
         }
-        h2 { font-size: 2em; margin-top: 1.5em; }
-        h3 { font-size: 1.5em; margin-top: 1.2em; }
-        p { margin: 1em 0; }
-        ul, ol { margin: 1em 0; padding-left: 2em; }
-        li { margin: 0.5em 0; }
-        strong { font-weight: 600; }
-        em { font-style: italic; }
+        h2 { 
+          font-size: 2em; 
+          margin-top: 1.5em; 
+          color: #000;
+        }
+        h3 { 
+          font-size: 1.5em; 
+          margin-top: 1.2em; 
+          color: #000;
+        }
+        p { 
+          margin: 1em 0; 
+        }
+        ul, ol { 
+          margin: 1em 0; 
+          padding-left: 2em; 
+        }
+        li { 
+          margin: 0.5em 0; 
+        }
+        strong { 
+          font-weight: 600; 
+        }
+        em { 
+          font-style: italic; 
+        }
         code {
           background: #f4f4f4;
           padding: 2px 6px;
           border-radius: 3px;
           font-family: 'Courier New', monospace;
         }
-        .icon { font-size: 1.5em; margin-right: 0.3em; }
       </style>
     </head>
     <body>
-      <h1>
-        ${icon ? `<span class="icon">${icon}</span>` : ""}
-        ${title || "Untitled"}
-      </h1>
-      ${htmlContent}
+      ${combinedContent}
     </body>
     </html>
   `;
     }
 
+    // Keep the same convertNode and convertContent functions from before
     function convertNode(node: any): string {
       switch (node.type) {
         case "paragraph":

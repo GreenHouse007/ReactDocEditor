@@ -2,6 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { Editor } from "../components/Editor";
+import { ExportModal } from "../components/ExportModal";
 import { useState, useEffect, useRef } from "react";
 
 export function DocumentEdit() {
@@ -11,6 +12,7 @@ export function DocumentEdit() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   // Timers for debouncing
   const titleTimerRef = useRef<NodeJS.Timeout>();
@@ -21,6 +23,12 @@ export function DocumentEdit() {
     queryKey: ["document", id],
     queryFn: () => api.getDocument(id!),
     enabled: !!id,
+  });
+
+  // Fetch all documents for export modal
+  const { data: allDocuments = [] } = useQuery({
+    queryKey: ["documents"],
+    queryFn: api.getDocuments,
   });
 
   // Update local state when document loads
@@ -98,21 +106,33 @@ export function DocumentEdit() {
     );
   }
 
-  const handleExportPDF = async () => {
-    if (!document) return;
-
+  const handleExportPDF = async (
+    selectedIds: string[],
+    includePageNumbers: boolean
+  ) => {
     try {
-      const blob = await api.exportPDF(title, content, document.icon);
+      // Get selected documents in order
+      const docsToExport = selectedIds
+        .map((id) => allDocuments.find((d) => d._id === id))
+        .filter((d) => d !== undefined)
+        .map((d) => ({
+          title: d!.title,
+          content: d!.content,
+        }));
+
+      const blob = await api.exportPDF(docsToExport, includePageNumbers);
 
       // Create download link
       const url = window.URL.createObjectURL(blob);
       const a = window.document.createElement("a");
       a.href = url;
-      a.download = `${title || "document"}.pdf`;
+      a.download = `enfield_export.pdf`;
       window.document.body.appendChild(a);
       a.click();
       window.document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
+
+      setShowExportModal(false);
     } catch (error) {
       console.error("PDF export failed:", error);
       alert("Failed to export PDF");
@@ -124,7 +144,7 @@ export function DocumentEdit() {
       {/* Save indicator and Export */}
       <div className="absolute top-4 right-8 flex items-center gap-4">
         <button
-          onClick={handleExportPDF}
+          onClick={() => setShowExportModal(true)} // CHANGE THIS
           className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition-colors"
         >
           📄 Export PDF
@@ -157,6 +177,14 @@ export function DocumentEdit() {
           placeholder="Start writing your world..."
         />
       </div>
+
+      {/* Export Modal */}
+      <ExportModal
+        isOpen={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        documents={allDocuments}
+        onExport={handleExportPDF}
+      />
     </div>
   );
 }
